@@ -207,8 +207,15 @@ func (a *App) SaveConfig() error {
 	if err := os.MkdirAll(cfgFolderLocation, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create config folder: %w", err)
 	}
-	if err := os.WriteFile(cfgFileLocation, out, 0600); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+	// Atomic write: a power loss or a crash midway through WriteFile
+	// would leave a truncated yaml without any groups.
+	tmpFile := cfgFileLocation + ".tmp"
+	if err := os.WriteFile(tmpFile, out, 0600); err != nil {
+		return fmt.Errorf("failed to write temp config file: %w", err)
+	}
+	if err := os.Rename(tmpFile, cfgFileLocation); err != nil {
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("failed to replace config file: %w", err)
 	}
 	return nil
 }

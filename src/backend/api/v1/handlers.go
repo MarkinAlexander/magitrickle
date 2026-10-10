@@ -160,14 +160,33 @@ func (h *Handler) PutGroups(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+		// Snapshot the old group models BEFORE ClearGroups: they are needed
+	// to roll the runtime back if the new batch fails to come up,
+	// otherwise a mid-batch failure leaves the runtime truncated.
+	oldGroups := make([]*models.Group, 0, len(h.userGroups()))
+	for _, g := range h.userGroups() {
+		oldGroups = append(oldGroups, g.Model())
+	}
+	rollback := func() {
+		h.app.ClearGroups()
+		for _, g := range oldGroups {
+			if err := h.app.AddGroup(g); err != nil {
+				log.Error().Err(err).Msg("rollback: failed to restore group")
+			}
+		}
+	}
 	h.app.ClearGroups()
 	for _, grp := range newGroups {
 		if err := h.app.AddGroup(grp); err != nil {
+			log.Error().Err(err).Msg("bulk put failed, rolling back")
+			rollback()
 			utils.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 	if err := h.app.SyncSubscriptionRuleSets(); err != nil {
+		log.Error().Err(err).Msg("subscription sync failed, rolling back")
+		rollback()
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

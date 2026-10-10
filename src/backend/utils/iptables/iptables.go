@@ -231,6 +231,26 @@ func (ipt *IPTables) Commit() (err error) {
 		return err
 	}
 
+	// ipset sets are family-bound: a rule referencing an IPv4 set
+	// must never reach the IPv6 restore stream and vice versa,
+	// iptables-restore rejects such a commit as a whole ("The
+	// protocol family of set ... is not applicable"). Drop those
+	// commands instead of failing the entire batch. ipset names
+	// embed the family suffix: "_4" for IPv4, "_6" for IPv6
+	// (see netfilterTools.IPSet naming).
+	oppositeSuffix := []byte("_4")
+	if ipt.Proto() == ProtocolIPv4 {
+		oppositeSuffix = []byte("_6")
+	}
+	dropCrossFamily := func(rule Rule) bool {
+		for _, part := range rule {
+			if bytes.HasSuffix(part, oppositeSuffix) {
+				return true
+			}
+		}
+		return false
+	}
+	ruleDropped := 0
 	for tableName, table := range ipt.rules {
 		curTable := curRules[tableName]
 
@@ -279,6 +299,10 @@ func (ipt *IPTables) Commit() (err error) {
 			for _, cmd := range commandsPrioritized[priority] {
 				switch cmd.Option {
 				case optionAppend:
+					if dropCrossFamily(cmd.Rule) {
+						ruleDropped++
+						continue
+					}
 					buf.WriteString("-A ")
 					buf.Write(cmd.Chain)
 					if len(cmd.Rule) > 0 {
@@ -295,6 +319,10 @@ func (ipt *IPTables) Commit() (err error) {
 					}
 					buf.WriteByte('\n')
 				case optionInsert:
+					if dropCrossFamily(cmd.Rule) {
+						ruleDropped++
+						continue
+					}
 					buf.WriteString("-I ")
 					buf.Write(cmd.Chain)
 					buf.WriteByte(' ')
@@ -320,6 +348,9 @@ func (ipt *IPTables) Commit() (err error) {
 
 	if buf.Len() == 0 {
 		return nil
+	}
+	if ruleDropped > 0 {
+		log.Warn().Int("count", ruleDropped).Msg("dropped cross-family ipset rules")
 	}
 
 	return ipt.executable.Restore(buf.Bytes())
