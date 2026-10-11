@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"magitrickle/api/utils"
 	"magitrickle/api/v1/types"
@@ -160,7 +161,7 @@ func (h *Handler) PutGroups(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-		// Snapshot the old group models BEFORE ClearGroups: they are needed
+	// Snapshot the old group models BEFORE ClearGroups: they are needed
 	// to roll the runtime back if the new batch fails to come up,
 	// otherwise a mid-batch failure leaves the runtime truncated.
 	oldGroups := make([]*models.Group, 0, len(h.userGroups()))
@@ -176,13 +177,23 @@ func (h *Handler) PutGroups(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.app.ClearGroups()
+	// Continue past a failing group so the response names EVERY group that
+	// could not come up (with its reason) instead of only the first one.
+	// The rollback below still keeps the batch atomic.
+	var failures []string
 	for _, grp := range newGroups {
 		if err := h.app.AddGroup(grp); err != nil {
-			log.Error().Err(err).Msg("bulk put failed, rolling back")
-			rollback()
-			utils.WriteError(w, http.StatusInternalServerError, err.Error())
-			return
+			log.Error().Err(err).Str("group", grp.Name).Msg("bulk put: group failed")
+			failures = append(failures, fmt.Sprintf("%q: %v", grp.Name, err))
+			continue
 		}
+	}
+	if len(failures) > 0 {
+		log.Error().Msg("bulk put failed, rolling back")
+		rollback()
+		utils.WriteError(w, http.StatusInternalServerError,
+			fmt.Sprintf("failed to enable %d group(s): %s", len(failures), strings.Join(failures, "; ")))
+		return
 	}
 	if err := h.app.SyncSubscriptionRuleSets(); err != nil {
 		log.Error().Err(err).Msg("subscription sync failed, rolling back")
@@ -291,7 +302,13 @@ func (h *Handler) PutGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if enabled {
+	// Rebuild whenever the final model state says enabled, not only when
+	// the runtime happened to be enabled before the request: GroupFromReq
+	// defaults Enable to true, so a single PUT can flip a disabled group's
+	// model to enabled. Skipping the rebuild left the model claiming
+	// "enabled" with no iptables chain in the runtime until the next bulk
+	// PUT or daemon restart.
+	if updatedGroup.Enable {
 		if err := groupWrapper.Enable(); err != nil {
 			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to enable group: %v", err))
 			return
