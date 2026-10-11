@@ -579,3 +579,21 @@ func TestPatchRemovesDuplicates(t *testing.T) {
 		t.Errorf("Patch duplicate removal failed.\nExpected: %v\nGot: %v", expected, rules)
 	}
 }
+
+// TestRestoreErrorContext: ошибка iptables-restore должна называть
+// конкретную строку потока, а не безликое "line N failed"
+func TestRestoreErrorContext(t *testing.T) {
+	stream := "*mangle\n:MT_a - -\n-A MT_a -j MARK\n-A MT_b -j FOO\nCOMMIT\n"
+	stderr := "iptables-restore: line 4 failed\n"
+	got := restoreErrorContext(stderr, []byte(stream))
+	want := ` (stream line 4: "-A MT_b -j FOO")`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got := restoreErrorContext("no line info", []byte(stream)); got != "" {
+		t.Fatalf("want empty, got %q", got)
+	}
+	if got := restoreErrorContext("line 99 failed", []byte(stream)); got != "" {
+		t.Fatalf("line beyond stream: want empty, got %q", got)
+	}
+}

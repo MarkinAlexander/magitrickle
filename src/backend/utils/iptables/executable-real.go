@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 )
 
 type realIPTables struct {
@@ -58,10 +61,29 @@ func (ipt *realIPTables) Restore(data []byte) error {
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf(
-			"iptables-restore failed: %w: %s",
-			err, stderr.String(),
+			"iptables-restore failed: %w: %s%s",
+			err, stderr.String(), restoreErrorContext(stderr.String(), data),
 		)
 	}
 
 	return nil
+}
+
+// restoreErrorContext extracts the failing stream line referenced by
+// iptables-restore ("line N failed") so the error names the actual rule
+// instead of an opaque line number.
+func restoreErrorContext(stderr string, data []byte) string {
+	m := regexp.MustCompile(`line (\d+) failed`).FindStringSubmatch(stderr)
+	if m == nil {
+		return ""
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 1 {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if n > len(lines) {
+		return ""
+	}
+	return fmt.Sprintf(" (stream line %d: %q)", n, strings.TrimSpace(lines[n-1]))
 }
