@@ -9,6 +9,7 @@ import (
 	"magitrickle/api/utils"
 	"magitrickle/api/v1/types"
 	"magitrickle/app"
+	"magitrickle/constant"
 	"magitrickle/models"
 	"magitrickle/utils/intID"
 
@@ -583,4 +584,16 @@ func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 			log.Error().Err(err).Msg("failed to save config file")
 		}
 	}
+}
+
+// GetVersion
+//
+//	@Summary		Получить версию MagiTrickle
+//	@Description	Возвращает версию запущенного бинарника (constant.Version из ldflags); контроллеры используют как capability-флаг
+//	@Tags			config
+//	@Produce		json
+//	@Success		200	{object}	types.VersionRes
+//	@Router			/api/v1/version [get]
+func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, types.VersionRes{Version: constant.Version})
 }

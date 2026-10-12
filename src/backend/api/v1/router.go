@@ -18,6 +18,7 @@ func NewRouter(a app.Main) chi.Router {
 	r := chi.NewRouter()
 	r.Get("/auth", auth.StatusHandler(a))
 	r.Post("/auth", auth.LoginHandler(a))
+	r.Get("/version", h.GetVersion)
 	r.Route("/groups", func(r chi.Router) {
 		r.Get("/", h.GetGroups)
 		r.Put("/", h.PutGroups)

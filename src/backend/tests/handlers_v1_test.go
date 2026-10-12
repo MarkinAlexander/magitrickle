@@ -15,6 +15,7 @@ import (
 	"magitrickle"
 	"magitrickle/api/v1"
 	"magitrickle/api/v1/types"
+	"magitrickle/constant"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -107,6 +108,26 @@ func TestIntegration(t *testing.T) {
 		} else {
 			t.Logf("We have %d groups", len(*gr.Groups))
 		}
+	})
+
+	t.Run("GetVersion", func(t *testing.T) {
+		resp, body := doRequest(t, http.MethodGet, baseURL+"/version", nil)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("GET /version => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var vr types.VersionRes
+		mustDecode(t, body, &vr)
+		if vr.Version == "" {
+			t.Fatalf("version is empty")
+		}
+		if vr.Version != constant.Version {
+			t.Errorf("version mismatch: got %q, want constant.Version %q", vr.Version, constant.Version)
+		}
+		t.Logf("version: %s", vr.Version)
 	})
 
 	t.Run("CreateGroup", func(t *testing.T) {

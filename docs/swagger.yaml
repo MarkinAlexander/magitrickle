@@ -140,6 +140,12 @@ definitions:
           $ref: '#/definitions/types.RuleRes'
         type: array
     type: object
+  types.VersionRes:
+    properties:
+      version:
+        example: 0.8.2-rev5-mawgfix2
+        type: string
+    type: object
 info:
   contact: {}
   title: MagiTrickle API
@@ -615,6 +621,19 @@ paths:
           schema:
             $ref: '#/definitions/types.ErrorRes'
       summary: Получить список интерфейсов
+      tags:
+      - config
+  /api/v1/version:
+    get:
+      description: Возвращает версию запущенного бинарника (constant.Version из ldflags); контроллеры используют как capability-флаг
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/types.VersionRes'
+      summary: Получить версию MagiTrickle
       tags:
       - config
 swagger: "2.0"
