@@ -61,6 +61,11 @@ func (r *PortRemap) insertIPTablesRules(ipt *iptables.IPTables) error {
 	// (ограничение источников, режимы "с роутером") не уходил в группы.
 	// Петля исключена: правила цепочки скоупятся на адреса config.Link,
 	// loopback-адрес upstream (127.0.0.1:53) в них не попадает.
+	// nat OUTPUT не входит в стартовый набор патчей - регистрируем сами,
+	// иначе Insert в незарегистрированную цепочку роняет старт.
+	if err := ipt.RegisterChainPatch("nat", "OUTPUT"); err != nil {
+		return fmt.Errorf("failed to register output chain patch: %w", err)
+	}
 	err = ipt.Insert("nat", "OUTPUT", 1, "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to linking output chain: %w", err)
