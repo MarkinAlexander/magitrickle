@@ -26,6 +26,7 @@ type IPSetToLink struct {
 	ifaceName string
 	startIdx  uint32
 	ipset     *IPSet
+	srcIPSet  *IPSet
 	nh        *Helper
 	mark      uint32
 	table     int
@@ -75,6 +76,23 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	err = ipt.RegisterChainOverride("mangle", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
+	}
+
+	// ограничение источников группы: первое правило возвращает пакеты с
+	// чужих источников, не доходя до MARK (немаркированный пакет не уходит
+	// в интерфейс группы по ip rule, поэтому filter/nat гвардить не нужно).
+	// Пустой список источников = правило не ставится, группа ловит всю сеть
+	if r.srcIPSet != nil {
+		srcIPSetName := r.srcIPSet.ipsetName
+		if ipt.Proto() == iptables.ProtocolIPv4 {
+			srcIPSetName += "_4"
+		} else {
+			srcIPSetName += "_6"
+		}
+		err = ipt.Append("mangle", r.chainName, "-m", "set", "!", "--match-set", srcIPSetName, "src", "-j", "RETURN")
+		if err != nil {
+			return fmt.Errorf("failed to append source guard rule: %w", err)
+		}
 	}
 
 	markStr := strconv.Itoa(int(r.mark))
@@ -542,12 +560,13 @@ func (r *IPSetToLink) AddrChangeHook(event netlink.AddrUpdate) error {
 	return errors.Join(errs...)
 }
 
-func (nh *Helper) IPSetToLink(name string, ifaceName string, ipset *IPSet) *IPSetToLink {
+func (nh *Helper) IPSetToLink(name string, ifaceName string, ipset *IPSet, srcIPSet *IPSet) *IPSetToLink {
 	return &IPSetToLink{
 		nh:        nh,
 		chainName: nh.ChainPrefix + name,
 		ifaceName: ifaceName,
 		ipset:     ipset,
+		srcIPSet:  srcIPSet,
 		startIdx:  nh.StartIdx,
 	}
 }

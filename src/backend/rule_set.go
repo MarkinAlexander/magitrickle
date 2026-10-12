@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +26,45 @@ type RuleSet struct {
 
 	app         *App
 	ipset       *netfilterTools.IPSet
+	srcIPSet    *netfilterTools.IPSet
 	ipsetToLink *netfilterTools.IPSetToLink
+}
+
+// parseSourceSubnets разбирает элемент списка источников группы: одиночный
+// IP или CIDR, v4 и v6
+func parseSourceSubnets(src string) ([]netfilterTools.IPv4Subnet, []netfilterTools.IPv6Subnet, error) {
+	if strings.Contains(src, ":") {
+		ip, ipNet, err := net.ParseCIDR(src)
+		if err != nil {
+			ip = net.ParseIP(src)
+			if ip == nil {
+				return nil, nil, fmt.Errorf("not an IPv6 address or CIDR")
+			}
+			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
+		}
+		ones, bits := ipNet.Mask.Size()
+		if bits != 128 || ones > 128 {
+			return nil, nil, fmt.Errorf("not an IPv6 CIDR")
+		}
+		var addr [16]byte
+		copy(addr[:], ipNet.IP.Mask(ipNet.Mask).To16())
+		return nil, []netfilterTools.IPv6Subnet{{Address: addr, CIDR: uint8(ones)}}, nil
+	}
+	ip, ipNet, err := net.ParseCIDR(src)
+	if err != nil {
+		ip = net.ParseIP(src)
+		if ip == nil {
+			return nil, nil, fmt.Errorf("not an IPv4 address or CIDR")
+		}
+		ipNet = &net.IPNet{IP: ip.To4(), Mask: net.CIDRMask(32, 32)}
+	}
+	ones, bits := ipNet.Mask.Size()
+	if bits != 32 || ones > 32 {
+		return nil, nil, fmt.Errorf("not an IPv4 CIDR")
+	}
+	var addr [4]byte
+	copy(addr[:], ipNet.IP.Mask(ipNet.Mask).To4())
+	return []netfilterTools.IPv4Subnet{{Address: addr, CIDR: uint8(ones)}}, nil, nil
 }
 
 func (g *RuleSet) Enabled() bool {
@@ -194,6 +233,13 @@ func (g *RuleSet) ListIPv6Subnets() (map[netfilterTools.IPv6Subnet]netfilterTool
 	return g.listIPv6Subnets()
 }
 
+func (g *RuleSet) SourceModels() []string {
+	if g.spec.Model != nil {
+		return g.spec.Model.Sources
+	}
+	return g.spec.Sources
+}
+
 func (g *RuleSet) enable() error {
 	if !g.enabled.CompareAndSwap(false, true) {
 		return nil
@@ -203,8 +249,16 @@ func (g *RuleSet) enable() error {
 		return nil
 	}
 
+	// ограничение источников: отдельный постоянный ipset, guard-правило
+	// в цепочке группы ссылается только на него - и то и другое живёт и
+	// умирает вместе с основным ipset, чтобы не ловить "ipset busy"
+	sources := g.SourceModels()
+	var srcIPSet *netfilterTools.IPSet
+	if len(sources) > 0 {
+		srcIPSet = g.app.nfHelper.IPSet(g.RuntimeKey() + "_src")
+	}
 	ipset := g.app.nfHelper.IPSet(g.RuntimeKey())
-	ipsetToLink := g.app.nfHelper.IPSetToLink(g.RuntimeKey(), g.RouteInterface(), ipset)
+	ipsetToLink := g.app.nfHelper.IPSetToLink(g.RuntimeKey(), g.RouteInterface(), ipset, srcIPSet)
 	if err := ipsetToLink.ClearIfDisabled(); err != nil {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}
@@ -213,6 +267,33 @@ func (g *RuleSet) enable() error {
 		return fmt.Errorf("failed to initialize ipset: %w", err)
 	}
 	g.ipset = ipset
+
+	if srcIPSet != nil {
+		if err := srcIPSet.Enable(); err != nil {
+			return fmt.Errorf("failed to initialize source ipset: %w", err)
+		}
+		g.srcIPSet = srcIPSet
+		// записи постоянные (nil-таймаут): список источников - конфиг,
+		// а не DNS-кэш; заполнение строго ДО ipsetToLink.Enable(), иначе
+		// iptables-restore упрётся в несуществующий сет
+		for _, src := range sources {
+			v4, v6, err := parseSourceSubnets(src)
+			if err != nil {
+				log.Warn().Str("source", src).Err(err).Msg("skipping invalid group source")
+				continue
+			}
+			for _, subnet := range v4 {
+				if err := srcIPSet.AddIPv4Subnet(subnet, nil); err != nil {
+					return fmt.Errorf("failed to populate source ipset: %w", err)
+				}
+			}
+			for _, subnet := range v6 {
+				if err := srcIPSet.AddIPv6Subnet(subnet, nil); err != nil {
+					return fmt.Errorf("failed to populate source ipset: %w", err)
+				}
+			}
+		}
+	}
 
 	if err := ipsetToLink.Enable(); err != nil {
 		return fmt.Errorf("failed to link ipset to interface: %w", err)
@@ -261,6 +342,16 @@ func (g *RuleSet) disable() error {
 			return fmt.Errorf("failed to destroy ipset: %w", err)
 		}
 		g.ipset = nil
+		return nil
+	}())
+	errs = append(errs, func() error {
+		if g.srcIPSet == nil {
+			return nil
+		}
+		if err := g.srcIPSet.Disable(); err != nil {
+			return fmt.Errorf("failed to destroy source ipset: %w", err)
+		}
+		g.srcIPSet = nil
 		return nil
 	}())
 	return errors.Join(errs...)

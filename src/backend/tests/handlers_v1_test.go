@@ -129,6 +129,39 @@ func TestIntegration(t *testing.T) {
 		}
 		t.Logf("Created group with ID=%v", newGrp.ID)
 	})
+
+	t.Run("CreateGroupWithSources", func(t *testing.T) {
+		req := types.GroupReq{
+			Name:      "TestGroupSources",
+			Interface: "nwg0",
+			Sources:   []string{"192.168.1.50", "10.0.0.0/24"},
+		}
+		payload, _ := json.Marshal(req)
+
+		resp, body := doRequest(t, http.MethodPost, baseURL+"/groups", payload)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("POST /groups (sources) => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var newGrp types.GroupRes
+		mustDecode(t, body, &newGrp)
+		if len(newGrp.Sources) != 2 || newGrp.Sources[0] != "192.168.1.50" || newGrp.Sources[1] != "10.0.0.0/24" {
+			t.Fatalf("sources not echoed: %v", newGrp.Sources)
+		}
+
+		// кривой источник -> 400, группа не создаётся
+		bad := types.GroupReq{Name: "TestGroupBadSource", Interface: "nwg0", Sources: []string{"not-an-ip"}}
+		payload, _ = json.Marshal(bad)
+		resp, body = doRequest(t, http.MethodPost, baseURL+"/groups", payload)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("POST /groups (bad source) => %d, want 400. Body: %s", resp.StatusCode, string(responseData))
+		}
+	})
 }
 
 func doRequest(t *testing.T, method, url string, data []byte) (*http.Response, io.ReadCloser) {
