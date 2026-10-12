@@ -55,6 +55,17 @@ func (r *PortRemap) insertIPTablesRules(ipt *iptables.IPTables) error {
 		return fmt.Errorf("failed to linking chain: %w", err)
 	}
 
+	// Собственные резолвы роутера к его DNS-адресу без этого прыжка идут
+	// мимо прокси (nat OUTPUT не перенаправлялся): ipset-ы групп не
+	// наполнялись из локальных запросов, и трафик самого роутера
+	// (ограничение источников, режимы "с роутером") не уходил в группы.
+	// Петля исключена: правила цепочки скоупятся на адреса config.Link,
+	// loopback-адрес upstream (127.0.0.1:53) в них не попадает.
+	err = ipt.Insert("nat", "OUTPUT", 1, "-j", r.chainName)
+	if err != nil {
+		return fmt.Errorf("failed to linking output chain: %w", err)
+	}
+
 	err = ipt.Commit()
 	if err != nil {
 		return fmt.Errorf("failed to commit iptables rules: %w", err)
@@ -76,6 +87,11 @@ func (r *PortRemap) deleteIPTablesRules(ipt *iptables.IPTables) error {
 	err = ipt.Delete("nat", "PREROUTING", "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
+	}
+
+	err = ipt.Delete("nat", "OUTPUT", "-j", r.chainName)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to unlinking output chain: %w", err))
 	}
 
 	err = ipt.Commit()
