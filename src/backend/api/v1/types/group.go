@@ -18,6 +18,7 @@ type GroupReq struct {
 	Color     string    `json:"color" example:"#ffffff"`
 	Interface string    `json:"interface" example:"nwg0"`
 	Enable    *bool     `json:"enable" example:"true" TODO:"Make required after 1.0.0"`
+	Sources   []string  `json:"sources,omitempty" example:"192.168.1.0/24"`
 	RulesReq
 }
 
@@ -27,5 +28,6 @@ type GroupRes struct {
 	Color     string   `json:"color" example:"#ffffff"`
 	Interface string   `json:"interface" example:"nwg0"`
 	Enable    bool     `json:"enable" example:"true"`
+	Sources   []string `json:"sources,omitempty" example:"192.168.1.0/24"`
 	RulesRes
 }

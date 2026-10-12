@@ -3,6 +3,7 @@ package magitrickle
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"magitrickle/models"
 
 	"github.com/dlclark/regexp2"
+	"github.com/rs/zerolog/log"
 	"go.yaml.in/yaml/v2"
 )
 
@@ -125,6 +127,21 @@ func (a *App) LoadConfig() error {
 			} else {
 				group.Color = strings.ToLower(group.Color)
 			}
+			// источники: выкидываем непарсящиеся записи (конфиг могли
+			// править руками), валидные оставляем как есть
+			sources := group.Sources[:0]
+			for _, src := range group.Sources {
+				src = strings.TrimSpace(src)
+				if src == "" {
+					continue
+				}
+				if _, _, err := net.ParseCIDR(src); err != nil && net.ParseIP(src) == nil {
+					log.Warn().Str("group", group.Name).Str("source", src).Msg("dropping invalid group source from config")
+					continue
+				}
+				sources = append(sources, src)
+			}
+			group.Sources = sources
 			if err := a.addGroupLocked(group); err != nil {
 				return err
 			}

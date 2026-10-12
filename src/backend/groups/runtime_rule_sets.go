@@ -25,6 +25,7 @@ func BuildRuntimeRuleSet(group *models.Group) rulesets.Spec {
 		Name:       group.Name,
 		Interface:  group.Interface,
 		Enable:     group.Enable,
+		Sources:    group.Sources,
 		Rules:      group.Rules,
 	}
 }

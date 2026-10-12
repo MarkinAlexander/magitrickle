@@ -10,5 +10,6 @@ type Group struct {
 	Color     string   `yaml:"color"`
 	Interface string   `yaml:"interface"`
 	Enable    bool     `yaml:"enable"`
+	Sources   []string `yaml:"sources,omitempty"`
 	Rules     []*Rule  `yaml:"rules"`
 }

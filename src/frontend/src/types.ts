@@ -48,6 +48,9 @@ export const GroupSchema = object({
   color: fallback(optional(string()), "#ffffff"),
   interface: string(),
   enable: fallback(boolean(), true),
+  // ограничение источников (IP/CIDR); fallback([]) сохраняет поле при
+  // PUT, пока в панели нет своего редактора
+  sources: fallback(optional(array(string())), []),
   rules: array(RuleSchema),
 });
 export type Group = InferOutput<typeof GroupSchema>;

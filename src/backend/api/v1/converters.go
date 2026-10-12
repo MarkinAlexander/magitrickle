@@ -2,6 +2,7 @@ package v1
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"magitrickle/api/v1/types"
@@ -12,6 +13,14 @@ import (
 )
 
 var colorRegExp = regexp2.MustCompile(`^#[0-9a-f]{6}$`, regexp2.IgnoreCase)
+
+// isValidSource - элемент списка источников группы: одиночный IP или CIDR
+func isValidSource(src string) bool {
+	if _, _, err := net.ParseCIDR(src); err == nil {
+		return true
+	}
+	return net.ParseIP(src) != nil
+}
 
 func GroupFromReq(req types.GroupReq, existing *models.Group) (*models.Group, error) {
 	var group *models.Group
@@ -37,6 +46,19 @@ func GroupFromReq(req types.GroupReq, existing *models.Group) (*models.Group, er
 	group.Enable = true
 	if req.Enable != nil {
 		group.Enable = *req.Enable
+	}
+	// источники подлежат полной замене вместе с группой (семантика PUT);
+	// отсутствие поля или пустой список = группа без ограничения источников
+	group.Sources = nil
+	for _, src := range req.Sources {
+		src = strings.TrimSpace(src)
+		if src == "" {
+			continue
+		}
+		if !isValidSource(src) {
+			return nil, fmt.Errorf("invalid source IP or CIDR: %s", src)
+		}
+		group.Sources = append(group.Sources, src)
 	}
 
 	if req.Rules != nil {
@@ -90,6 +112,7 @@ func RespFromGroup(group *models.Group, withRules bool) types.GroupRes {
 		Color:     group.Color,
 		Interface: group.Interface,
 		Enable:    group.Enable,
+		Sources:   group.Sources,
 	}
 	if withRules {
 		groupRes.RulesRes = RespFromRules(group.Rules)

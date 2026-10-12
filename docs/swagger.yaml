@@ -26,6 +26,12 @@ definitions:
         items:
           $ref: '#/definitions/types.RuleReq'
         type: array
+      sources:
+        description: 'ограничение источников: только трафик с этих IP/CIDR уходит в группу; пусто - вся локальная сеть'
+        example: 192.168.1.0/24
+        items:
+          type: string
+        type: array
     type: object
   types.GroupRes:
     properties:
@@ -47,6 +53,12 @@ definitions:
       rules:
         items:
           $ref: '#/definitions/types.RuleRes'
+        type: array
+      sources:
+        description: 'ограничение источников: только трафик с этих IP/CIDR уходит в группу; пусто - вся локальная сеть'
+        example: 192.168.1.0/24
+        items:
+          type: string
         type: array
     type: object
   types.GroupsReq:

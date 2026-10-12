@@ -12,5 +12,6 @@ type Spec struct {
 	Name       string
 	Interface  string
 	Enable     bool
+	Sources    []string
 	Rules      []*models.Rule
 }
