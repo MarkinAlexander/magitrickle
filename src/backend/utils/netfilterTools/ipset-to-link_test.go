@@ -10,13 +10,14 @@ import (
 )
 
 // helper: новый fake с зарегистрированными builtin-цепочками (как при
-// старте Helper) - insertIPTablesRules прыгает во все три
+// старте Helper) - insertIPTablesRules прыгает во все четыре
 func newTestIPTables(proto iptables.Protocol) (*iptables.FakeIPTables, *iptables.IPTables) {
 	fake := iptables.NewFakeIPTables(proto)
 	ipt := iptables.NewIPTables(fake)
 	for _, tc := range [][2]string{
 		{"filter", "FORWARD"},
 		{"mangle", "PREROUTING"},
+		{"mangle", "OUTPUT"},
 		{"nat", "POSTROUTING"},
 	} {
 		if err := ipt.RegisterChainPatch(tc[0], tc[1]); err != nil {
@@ -83,5 +84,38 @@ func TestNoSourceGuardWithoutSrcSet(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rules[0], []string{"-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN"}) {
 		t.Fatalf("first rule changed: %v", rules[0])
+	}
+}
+
+// OUTPUT-jump роутерного трафика (64-док §5): джамп в общую mangle-цепочку
+// группы ставится и снимается вместе с группой - маркировка DNS-запросов
+// самого роутера больше не зависит от ручных правил
+func TestMangleOutputJump(t *testing.T) {
+	dst := &IPSet{ipsetName: "mt_0a1b2c3d"}
+	nh := &Helper{ChainPrefix: "MT_"}
+
+	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil)
+	fake, ipt := newTestIPTables(iptables.ProtocolIPv4)
+	if err := link.insertIPTablesRules(ipt); err != nil {
+		t.Fatalf("insertIPTablesRules: %v", err)
+	}
+	want := []string{"-j", "MT_0a1b2c3d"}
+	var found bool
+	for _, r := range fake.GetRules("mangle", "OUTPUT") {
+		if reflect.DeepEqual(r, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("OUTPUT jump missing: %v", fake.GetRules("mangle", "OUTPUT"))
+	}
+
+	if err := link.deleteIPTablesRules(ipt); err != nil {
+		t.Fatalf("deleteIPTablesRules: %v", err)
+	}
+	for _, r := range fake.GetRules("mangle", "OUTPUT") {
+		if reflect.DeepEqual(r, want) {
+			t.Fatalf("OUTPUT jump survived delete")
+		}
 	}
 }

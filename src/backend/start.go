@@ -93,6 +93,9 @@ func (a *App) Start(ctx context.Context) (err error) {
 		}
 		ipt.RegisterChainPatch("filter", "FORWARD")
 		ipt.RegisterChainPatch("mangle", "PREROUTING")
+		// OUTPUT - трафик самого роутера (dns-proxy, зонды): группы
+		// маркируют его нативно, ручные джампы больше не нужны (64-док §5)
+		ipt.RegisterChainPatch("mangle", "OUTPUT")
 		ipt.RegisterChainPatch("nat", "PREROUTING")
 		ipt.RegisterChainPatch("nat", "POSTROUTING")
 	}

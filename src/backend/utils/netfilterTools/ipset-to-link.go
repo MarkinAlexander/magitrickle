@@ -113,6 +113,20 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	}
 
 	/*
+		Mangle Output - трафик САМОГО роутера (dns-proxy, зонды контроллера).
+		Джамп в ту же цепочку (правила в ней не зависят от пути), иначе
+		каждый Commit вытесняет внешние OUTPUT-джампы - DNS-каскад на
+		роутерном трафике приходилось разводить руками (64-док §5).
+		С source-гвардией группы трафик роутера маркируется только когда
+		его адрес в src-наборе (43-док §2.5).
+	*/
+
+	err = ipt.Append("mangle", "OUTPUT", "-j", r.chainName)
+	if err != nil {
+		return fmt.Errorf("failed to append rule to OUTPUT: %w", err)
+	}
+
+	/*
 		NAT Postrouting
 	*/
 
@@ -168,6 +182,12 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 	}
 
 	err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
+	}
+
+	// Mangle Output (64-док §5): зеркальный анлинк роутерного джампа
+	err = ipt.Delete("mangle", "OUTPUT", "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
 	}
