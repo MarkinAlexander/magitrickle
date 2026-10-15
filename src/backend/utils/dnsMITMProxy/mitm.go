@@ -25,14 +25,16 @@ type DNSMITMProxy struct {
 	ResponseHook func(net.Addr, dns.Msg, dns.Msg, string) (*dns.Msg, error)
 
 	// Private fields
-	bufferPool  *sync.Pool
-	tcpConnPool *connPool
-	udpConnPool *connPool
-	semaphore   chan struct{}
-	timeout     time.Duration
+	bufferPool *sync.Pool
+	upstreams  *upstreamManager
+	semaphore  chan struct{}
+	timeout    time.Duration
 }
 
-func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time.Duration) *DNSMITMProxy {
+// NewDNSMITMProxy принимает упорядоченный список апстримов (приоритет =
+// порядок, 43-док §5) и политику зондов-канареек; одиночный апстрим -
+// вырожденный случай списка из одного.
+func NewDNSMITMProxy(upstreamAddrs []string, maxIdleConns, maxConcurrent uint, timeout time.Duration, health UpstreamHealth) *DNSMITMProxy {
 	return &DNSMITMProxy{
 		bufferPool: &sync.Pool{
 			New: func() interface{} {
@@ -40,30 +42,77 @@ func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time
 				return &buf
 			},
 		},
-		timeout:     timeout,
-		tcpConnPool: newConnPool("tcp", addr, maxIdleConns),
-		udpConnPool: newConnPool("udp", addr, maxIdleConns),
-		semaphore:   make(chan struct{}, maxConcurrent),
+		timeout:   timeout,
+		upstreams: newUpstreamManager(upstreamAddrs, maxIdleConns, health),
+		semaphore: make(chan struct{}, maxConcurrent),
 	}
+}
+
+// StartHealthWorker запускает воркер зондов-канареек (живёт только при
+// включённой политике и >=2 апстримах).
+func (p *DNSMITMProxy) StartHealthWorker(ctx context.Context) {
+	p.upstreams.start(ctx)
+}
+
+// UpdateUpstreams - горячая подмена списка апстримов и политики зондов
+// (SIGHUP/LoadConfig без рестарта слушателей).
+func (p *DNSMITMProxy) UpdateUpstreams(upstreamAddrs []string, health UpstreamHealth) {
+	p.upstreams.update(upstreamAddrs, health)
 }
 
 // Close closes all connection pools and releases resources
 func (p *DNSMITMProxy) Close() error {
-	if p.tcpConnPool != nil {
-		p.tcpConnPool.Close()
-	}
-	if p.udpConnPool != nil {
-		p.udpConnPool.Close()
-	}
+	p.upstreams.close()
 	return nil
 }
 
 func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, network string) ([]byte, error) {
+	// перебор кандидатов: активный (первый живой) -> остальные живые ->
+	// мёртвые по приоритету (деградация); ошибка транспорта апстрима
+	// считает его цикл «болен» (возврат - только по канарейке).
+	// Бюджет делится на попытки (мин 300мс на попытку) - иначе мёртвый
+	// первый апстрим (дроп пакетов) съедает весь дедлайн клиента, до
+	// живых дело не доходит (та же эмпирика Фазы E, что у зонда mawg)
+	candidates := p.upstreams.candidates()
+	if len(candidates) == 0 {
+		return nil, errors.New("no upstreams configured")
+	}
+	budget := p.timeout
+	var lastErr error
+	for i, u := range candidates {
+		attempt := budget / time.Duration(len(candidates)-i)
+		if attempt < 300*time.Millisecond {
+			attempt = 300 * time.Millisecond
+		}
+		if attempt > budget {
+			attempt = budget
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, attempt)
+		resp, err := p.exchangeUpstream(attemptCtx, u, req, network)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		p.upstreams.markTransportError(u)
+		budget -= attempt
+		if budget <= 0 {
+			break
+		}
+		log.Debug().Str("upstream", u.addr).Err(err).Msg("upstream failed, trying next")
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no upstreams configured")
+	}
+	return nil, fmt.Errorf("all upstreams failed: %w", lastErr)
+}
+
+func (p *DNSMITMProxy) exchangeUpstream(ctx context.Context, u *upstream, req []byte, network string) ([]byte, error) {
 	var pool *connPool
 	if network == "tcp" {
-		pool = p.tcpConnPool
+		pool = u.tcp
 	} else {
-		pool = p.udpConnPool
+		pool = u.udp
 	}
 
 	upstreamConn, err := pool.Get(ctx)

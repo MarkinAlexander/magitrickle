@@ -19,6 +19,21 @@ import (
 
 var colorRegExp = regexp2.MustCompile(`^#[0-9a-f]{6}$`, regexp2.IgnoreCase)
 
+// upstreamsToFile - список апстримов для файла конфига; nil (ключ не
+// задан) сохраняется как nil - только явно заданный список переживает
+// запись (пустой список = сознательный возврат на одиночный Upstream).
+func upstreamsToFile(ups []models.AppConfigDNSProxyServer) *[]config.DNSProxyServer {
+	if ups == nil {
+		return nil
+	}
+	out := make([]config.DNSProxyServer, 0, len(ups))
+	for _, u := range ups {
+		addr, port := u.Address, u.Port
+		out = append(out, config.DNSProxyServer{Address: &addr, Port: &port})
+	}
+	return &out
+}
+
 const cfgFolderLocation = constant.AppStateDir
 const cfgFileLocation = cfgFolderLocation + "/config.yaml"
 
@@ -64,6 +79,24 @@ func (a *App) LoadConfig() error {
 				applyIfSet(&a.config.DNSProxy.Upstream.Address, cfg.App.DNSProxy.Upstream.Address)
 				applyIfSet(&a.config.DNSProxy.Upstream.Port, cfg.App.DNSProxy.Upstream.Port)
 			}
+			if cfg.App.DNSProxy.Upstreams != nil {
+				ups := make([]models.AppConfigDNSProxyServer, 0, len(*cfg.App.DNSProxy.Upstreams))
+				for _, u := range *cfg.App.DNSProxy.Upstreams {
+					s := models.AppConfigDNSProxyServer{}
+					applyIfSet(&s.Address, u.Address)
+					applyIfSet(&s.Port, u.Port)
+					ups = append(ups, s)
+				}
+				a.config.DNSProxy.Upstreams = ups
+			}
+			if cfg.App.DNSProxy.Health != nil {
+				applyIfSet(&a.config.DNSProxy.Health.Enabled, cfg.App.DNSProxy.Health.Enabled)
+				applyIfSet(&a.config.DNSProxy.Health.Interval, cfg.App.DNSProxy.Health.Interval)
+				applyIfSet(&a.config.DNSProxy.Health.Timeout, cfg.App.DNSProxy.Health.Timeout)
+				applyIfSet(&a.config.DNSProxy.Health.FailCycles, cfg.App.DNSProxy.Health.FailCycles)
+				applyIfSet(&a.config.DNSProxy.Health.RestoreCycles, cfg.App.DNSProxy.Health.RestoreCycles)
+				applyIfSet(&a.config.DNSProxy.Health.RestoreGap, cfg.App.DNSProxy.Health.RestoreGap)
+			}
 			if cfg.App.DNSProxy.Host != nil {
 				applyIfSet(&a.config.DNSProxy.Host.Address, cfg.App.DNSProxy.Host.Address)
 				applyIfSet(&a.config.DNSProxy.Host.Port, cfg.App.DNSProxy.Host.Port)
@@ -106,6 +139,12 @@ func (a *App) LoadConfig() error {
 		applyIfSet(&a.config.Link, cfg.App.Link)
 		applyIfSet(&a.config.ShowAllInterfaces, cfg.App.ShowAllInterfaces)
 		applyIfSet(&a.config.LogLevel, cfg.App.LogLevel)
+	}
+
+	// горячая подмена апстримов живому dns-proxy (SIGHUP без рестарта
+	// демона; до Start() a.dnsMITM == nil - подменять нечего)
+	if a.dnsMITM != nil {
+		a.dnsMITM.UpdateUpstreams(dnsUpstreamAddrs(a.config.DNSProxy), dnsHealthConfig(a.config.DNSProxy.Health))
 	}
 
 	a.subscriptionSyncMu.Lock()
@@ -190,6 +229,15 @@ func (a *App) SaveConfig() error {
 				Upstream: &config.DNSProxyServer{
 					Address: &a.config.DNSProxy.Upstream.Address,
 					Port:    &a.config.DNSProxy.Upstream.Port,
+				},
+				Upstreams: upstreamsToFile(a.config.DNSProxy.Upstreams),
+				Health: &config.DNSProxyHealth{
+					Enabled:       &a.config.DNSProxy.Health.Enabled,
+					Interval:      &a.config.DNSProxy.Health.Interval,
+					Timeout:       &a.config.DNSProxy.Health.Timeout,
+					FailCycles:    &a.config.DNSProxy.Health.FailCycles,
+					RestoreCycles: &a.config.DNSProxy.Health.RestoreCycles,
+					RestoreGap:    &a.config.DNSProxy.Health.RestoreGap,
 				},
 				DisableRemap53:  &a.config.DNSProxy.DisableRemap53,
 				DisableFakePTR:  &a.config.DNSProxy.DisableFakePTR,

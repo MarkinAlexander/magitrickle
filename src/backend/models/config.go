@@ -30,6 +30,8 @@ type AppConfigHTTPWebServer struct {
 type AppConfigDNSProxy struct {
 	Host            AppConfigDNSProxyServer
 	Upstream        AppConfigDNSProxyServer
+	Upstreams       []AppConfigDNSProxyServer
+	Health          AppConfigDNSProxyHealth
 	DisableRemap53  bool
 	DisableFakePTR  bool
 	DisableDropAAAA bool
@@ -41,6 +43,28 @@ type AppConfigDNSProxy struct {
 type AppConfigDNSProxyServer struct {
 	Address string
 	Port    uint16
+}
+
+// AppConfigDNSProxyHealth - политика зондов апстримов (46-док §3):
+// вниз - K неудач подряд, вверх - M успехов подряд и не чаще раза в
+// RestoreGap; зонды - канарейка-контент-чек (63-док, эмпирика Фазы E:
+// живость без проверки контента бесполезна на отравленной сети).
+type AppConfigDNSProxyHealth struct {
+	Enabled       bool
+	Interval      time.Duration
+	Timeout       time.Duration
+	FailCycles    uint
+	RestoreCycles uint
+	RestoreGap    time.Duration
+}
+
+// UpstreamList - эффективный список апстримов: непустой Upstreams
+// вытесняет одиночный Upstream (обратная совместимость, 43-док §5).
+func (c AppConfigDNSProxy) UpstreamList() []AppConfigDNSProxyServer {
+	if len(c.Upstreams) > 0 {
+		return c.Upstreams
+	}
+	return []AppConfigDNSProxyServer{c.Upstream}
 }
 
 type AppConfigNetfilter struct {

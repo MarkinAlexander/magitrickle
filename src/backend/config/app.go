@@ -28,14 +28,28 @@ type HTTPWebServer struct {
 }
 
 type DNSProxy struct {
-	Host            *DNSProxyServer `yaml:"host"`
-	Upstream        *DNSProxyServer `yaml:"upstream"`
+	Host     *DNSProxyServer   `yaml:"host"`
+	Upstream *DNSProxyServer   `yaml:"upstream"`
+	// Upstreams - упорядоченный список апстримов (приоритет = порядок,
+	// 43-док §5); непустой список вытесняет одиночный Upstream.
+	Upstreams *[]DNSProxyServer `yaml:"upstreams"`
+	// Health - зонды-канарейки апстримов с гистерезисом K/M (46-док §3).
+	Health          *DNSProxyHealth `yaml:"health"`
 	DisableRemap53  *bool           `yaml:"disableRemap53"`
 	DisableFakePTR  *bool           `yaml:"disableFakePTR"`
 	DisableDropAAAA *bool           `yaml:"disableDropAAAA"`
 	MaxIdleConns    *uint           `yaml:"maxIdleConns"`
 	MaxConcurrent   *uint           `yaml:"maxConcurrent"`
 	Timeout         *time.Duration  `yaml:"timeout"`
+}
+
+type DNSProxyHealth struct {
+	Enabled       *bool          `yaml:"enabled"`
+	Interval      *time.Duration `yaml:"interval"`
+	Timeout       *time.Duration `yaml:"timeout"`
+	FailCycles    *uint          `yaml:"failCycles"`
+	RestoreCycles *uint          `yaml:"restoreCycles"`
+	RestoreGap    *time.Duration `yaml:"restoreGap"`
 }
 
 type DNSProxyServer struct {

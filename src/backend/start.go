@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magitrickle/api"
+	"magitrickle/models"
 	"magitrickle/utils/dnsMITMProxy"
 	"magitrickle/utils/iptables"
 	"magitrickle/utils/netfilterTools"
@@ -20,6 +21,31 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
+
+// dnsUpstreamAddrs - адреса эффективного списка апстримов (host:port).
+func dnsUpstreamAddrs(c models.AppConfigDNSProxy) []string {
+	servers := c.UpstreamList()
+	addrs := make([]string, 0, len(servers))
+	for _, u := range servers {
+		if u.Address == "" {
+			continue
+		}
+		addrs = append(addrs, net.JoinHostPort(u.Address, strconv.Itoa(int(u.Port))))
+	}
+	return addrs
+}
+
+// dnsHealthConfig - политика зондов апстримов из модели конфига.
+func dnsHealthConfig(h models.AppConfigDNSProxyHealth) dnsMITMProxy.UpstreamHealth {
+	return dnsMITMProxy.UpstreamHealth{
+		Enabled:       h.Enabled,
+		Interval:      h.Interval,
+		Timeout:       h.Timeout,
+		FailCycles:    h.FailCycles,
+		RestoreCycles: h.RestoreCycles,
+		RestoreGap:    h.RestoreGap,
+	}
+}
 
 // Start запускает приложение (ядро)
 func (a *App) Start(ctx context.Context) (err error) {
@@ -38,10 +64,11 @@ func (a *App) Start(ctx context.Context) (err error) {
 	a.setupLogging()
 
 	a.dnsMITM = dnsMITMProxy.NewDNSMITMProxy(
-		net.JoinHostPort(a.config.DNSProxy.Upstream.Address, strconv.Itoa(int(a.config.DNSProxy.Upstream.Port))),
+		dnsUpstreamAddrs(a.config.DNSProxy),
 		a.config.DNSProxy.MaxIdleConns,
 		a.config.DNSProxy.MaxConcurrent,
 		a.config.DNSProxy.Timeout,
+		dnsHealthConfig(a.config.DNSProxy.Health),
 	)
 	a.dnsMITM.RequestHook = a.dnsRequestHook
 	a.dnsMITM.ResponseHook = a.dnsResponseHook
@@ -89,6 +116,10 @@ func (a *App) Start(ctx context.Context) (err error) {
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errChan := make(chan error)
+
+	// зонды-канарейки апстримов (46-док §3): живут на новом контексте -
+	// гаснут вместе с ядром
+	a.dnsMITM.StartHealthWorker(newCtx)
 
 	httpServer, err := api.SetupHTTP(a, errChan)
 	if err != nil {

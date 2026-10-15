@@ -8,8 +8,16 @@ import (
 
 var DefaultAppConfig = models.AppConfig{
 	DNSProxy: models.AppConfigDNSProxy{
-		Host:            models.AppConfigDNSProxyServer{Address: "[::]", Port: 3553},
-		Upstream:        models.AppConfigDNSProxyServer{Address: "127.0.0.1", Port: 53},
+		Host:     models.AppConfigDNSProxyServer{Address: "[::]", Port: 3553},
+		Upstream: models.AppConfigDNSProxyServer{Address: "127.0.0.1", Port: 53},
+		Health: models.AppConfigDNSProxyHealth{
+			Enabled:       true,
+			Interval:      10 * time.Second,
+			Timeout:       2 * time.Second,
+			FailCycles:    3,
+			RestoreCycles: 2,
+			RestoreGap:    5 * time.Minute,
+		},
 		DisableRemap53:  false,
 		DisableFakePTR:  false,
 		DisableDropAAAA: false,
