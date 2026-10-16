@@ -60,6 +60,12 @@ func (p *DNSMITMProxy) UpdateUpstreams(upstreamAddrs []string, health UpstreamHe
 	p.upstreams.update(upstreamAddrs, health)
 }
 
+// UpstreamsSnapshot - состояние апстримов и политики зондов для
+// мониторинга (API rev8, GET /api/v1/dns/upstreams контроллером mawg).
+func (p *DNSMITMProxy) UpstreamsSnapshot() UpstreamsSnapshot {
+	return p.upstreams.snapshot()
+}
+
 // Close closes all connection pools and releases resources
 func (p *DNSMITMProxy) Close() error {
 	p.upstreams.close()

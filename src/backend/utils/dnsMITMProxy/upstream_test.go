@@ -238,3 +238,54 @@ func TestCanaryProbeVerdicts(t *testing.T) {
 		t.Fatalf("мёртвый: ok=%v why=%q", ok, why)
 	}
 }
+
+// снапшот стейта (API rev8): порядок апстримов сохраняется, active -
+// первый живой, у мёртвого - причина и момент переключения
+func TestUpstreamsSnapshot(t *testing.T) {
+	clean := "204.8.99.144"
+	a1 := fakeUpstreamUDP(t, &clean)
+	a2 := fakeUpstreamUDP(t, &clean)
+	h := UpstreamHealth{Enabled: true, Interval: time.Second, Timeout: 500 * time.Millisecond, FailCycles: 1, RestoreCycles: 1, RestoreGap: 0}
+	m := newUpstreamManager([]string{a1, a2}, 2, h)
+
+	// второй апстрим «умер»: K=1 неудача подряд
+	m.mark(m.upstreams[1], false, "dial: i/o timeout")
+	snap := m.snapshot()
+	if len(snap.Upstreams) != 2 {
+		t.Fatalf("в снапшоте %d апстримов", len(snap.Upstreams))
+	}
+	if snap.Upstreams[0].Address != a1 || !snap.Upstreams[0].Alive || !snap.Upstreams[0].Active {
+		t.Fatalf("первый (живой) неверен: %+v", snap.Upstreams[0])
+	}
+	dead := snap.Upstreams[1]
+	if dead.Address != a2 || dead.Alive || dead.Active {
+		t.Fatalf("второй должен быть мёртвым и не активным: %+v", dead)
+	}
+	if dead.Reason != "dial: i/o timeout" || dead.LastSwap.IsZero() {
+		t.Fatalf("причина/момент переключения потеряны: %+v", dead)
+	}
+	if !snap.Health.Enabled || snap.Health.FailCycles != 1 {
+		t.Fatalf("политика зондов не в снапшоте: %+v", snap.Health)
+	}
+
+	// оба мертвы: active никому не ставится; обновление политики видно
+	m.mark(m.upstreams[0], false, "read: timeout")
+	snap = m.snapshot()
+	for _, u := range snap.Upstreams {
+		if u.Active {
+			t.Fatalf("active при всех мёртвых: %+v", snap.Upstreams)
+		}
+	}
+	m.update([]string{a1}, UpstreamHealth{Enabled: false})
+	m.upstreams[0].alive = true // выживший восстановлен вручную (политика update'ом обнулилась)
+	if snap := m.snapshot(); snap.Health.Enabled || len(snap.Upstreams) != 1 || !snap.Upstreams[0].Active {
+		t.Fatalf("после update: %+v", snap)
+	}
+	m.close()
+
+	// ноль апстримов (после close) - честный пустой снапшот без паники
+	snap = m.snapshot()
+	if len(snap.Upstreams) != 0 {
+		t.Fatalf("после close снапшот непустой: %+v", snap.Upstreams)
+	}
+}

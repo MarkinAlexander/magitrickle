@@ -50,6 +50,28 @@ type upstream struct {
 	reason   string
 }
 
+// UpstreamState - снимок здоровья одного апстрима для мониторинга (API
+// rev8, читает контроллер mawg): alive/active, счётчики подряд, момент и
+// причина последнего переключения.
+type UpstreamState struct {
+	Address  string    `json:"address"`
+	Alive    bool      `json:"alive"`
+	Active   bool      `json:"active"`
+	Fails    uint      `json:"fails"`
+	Oks      uint      `json:"oks"`
+	LastSwap time.Time `json:"lastSwap"`
+	Reason   string    `json:"reason,omitempty"`
+}
+
+// UpstreamsSnapshot - снимок состояния менеджера апстримов (API rev8):
+// порядок = приоритет, Active - первый живой (клиентские запросы идут в
+// него в первую очередь). Стейт только в памяти - снимок честно показывает
+// текущее положение, а не историю.
+type UpstreamsSnapshot struct {
+	Health    UpstreamHealth  `json:"health"`
+	Upstreams []UpstreamState `json:"upstreams"`
+}
+
 func newUpstream(addr string, maxIdle uint) *upstream {
 	return &upstream{
 		addr:  addr,
@@ -63,6 +85,21 @@ func (u *upstream) isAlive() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.alive
+}
+
+// state - снимок здоровья одного апстрима (локи менеджера и апстрима не
+// вкладываются: snapshot() сначала снимает RLock менеджера).
+func (u *upstream) state() UpstreamState {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return UpstreamState{
+		Address:  u.addr,
+		Alive:    u.alive,
+		Fails:    u.fails,
+		Oks:      u.oks,
+		LastSwap: u.lastSwap,
+		Reason:   u.reason,
+	}
 }
 
 // upstreamManager - упорядоченный список апстримов (приоритет = порядок)
@@ -192,6 +229,28 @@ func (m *upstreamManager) candidates() []*upstream {
 		}
 	}
 	return append(live, dead...)
+}
+
+// snapshot - снимок стейта для мониторинга (API rev8): порядок апстримов
+// сохраняется, Active ставится первому живому (равно candidates()[0]).
+func (m *upstreamManager) snapshot() UpstreamsSnapshot {
+	m.mu.RLock()
+	h := m.health
+	ups := make([]*upstream, len(m.upstreams))
+	copy(ups, m.upstreams)
+	m.mu.RUnlock()
+
+	snap := UpstreamsSnapshot{Health: h, Upstreams: make([]UpstreamState, 0, len(ups))}
+	activeSet := false
+	for _, u := range ups {
+		st := u.state()
+		if !activeSet && st.Alive {
+			st.Active = true
+			activeSet = true
+		}
+		snap.Upstreams = append(snap.Upstreams, st)
+	}
+	return snap
 }
 
 func (m *upstreamManager) worker(ctx context.Context) {

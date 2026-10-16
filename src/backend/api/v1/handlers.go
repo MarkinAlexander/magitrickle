@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -596,4 +597,77 @@ func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 //	@Router			/api/v1/version [get]
 func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, http.StatusOK, types.VersionRes{Version: constant.Version})
+}
+
+// GetDnsUpstreams
+//
+//	@Summary		Состояние каскада апстримов dns-proxy
+//	@Description	Снимок стейта менеджера мультиапстрима (alive/active/счётчики/причина) + политика зондов; читается контроллером mawg
+//	@Tags			dns
+//	@Produce		json
+//	@Success		200	{object}	types.DnsUpstreamsRes
+//	@Router			/api/v1/dns/upstreams [get]
+func (h *Handler) GetDnsUpstreams(w http.ResponseWriter, r *http.Request) {
+	snap, ok := h.app.DnsUpstreamsSnapshot()
+	if !ok {
+		utils.WriteJson(w, http.StatusOK, types.DnsUpstreamsRes{
+			Available: false,
+			Upstreams: []types.DnsUpstreamState{},
+		})
+		return
+	}
+	res := types.DnsUpstreamsRes{
+		Available: true,
+		Health: types.DnsHealthRes{
+			Enabled:       snap.Health.Enabled,
+			Interval:      snap.Health.Interval.String(),
+			Timeout:       snap.Health.Timeout.String(),
+			FailCycles:    snap.Health.FailCycles,
+			RestoreCycles: snap.Health.RestoreCycles,
+			RestoreGap:    snap.Health.RestoreGap.String(),
+		},
+		Upstreams: make([]types.DnsUpstreamState, 0, len(snap.Upstreams)),
+	}
+	for _, u := range snap.Upstreams {
+		res.Upstreams = append(res.Upstreams, types.DnsUpstreamState{
+			Address:  u.Address,
+			Alive:    u.Alive,
+			Active:   u.Active,
+			Fails:    u.Fails,
+			Oks:      u.Oks,
+			LastSwap: u.LastSwap,
+			Reason:   u.Reason,
+		})
+	}
+	utils.WriteJson(w, http.StatusOK, res)
+}
+
+// PutDnsUpstreams
+//
+//	@Summary		Замена списка апстримов dns-proxy
+//	@Description	Порядок = приоритет, порт по умолчанию 53; сохраняет конфиг и горячо подменяет список без рестарта демона
+//	@Tags			dns
+//	@Accept			json
+//	@Produce		json
+//	@Param			json	body	types.DnsUpstreamsPutReq	true	"Новый список апстримов"
+//	@Success		200	{object}	types.DnsUpstreamsRes
+//	@Failure		400	{object}	types.ErrorRes
+//	@Failure		500	{object}	types.ErrorRes
+//	@Router			/api/v1/dns/upstreams [put]
+func (h *Handler) PutDnsUpstreams(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[types.DnsUpstreamsPutReq](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.app.SetDnsUpstreams(req.Upstreams); err != nil {
+		if errors.Is(err, app.ErrDnsUpstreamsInvalid) {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+		} else {
+			log.Error().Err(err).Msg("failed to set dns upstreams")
+			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	h.GetDnsUpstreams(w, r)
 }

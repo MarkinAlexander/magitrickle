@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magitrickle/models"
+	"magitrickle/utils/dnsMITMProxy"
 	"magitrickle/utils/intID"
 	"magitrickle/utils/netfilterTools"
 
@@ -17,6 +18,7 @@ var (
 	ErrSubscriptionNotFound = errors.New("subscription not found")
 	ErrSubscriptionInvalid  = errors.New("subscription invalid")
 	ErrSubscriptionFetch    = errors.New("subscription fetch failed")
+	ErrDnsUpstreamsInvalid  = errors.New("dns upstreams invalid")
 )
 
 type SubscriptionSyncResult struct {
@@ -41,6 +43,13 @@ type Main interface {
 	SyncDueSubscriptions(now time.Time) (bool, error)
 	ListInterfaces() ([]models.InterfaceInfo, error)
 	DnsOverrider() *netfilterTools.PortRemap
+	// DnsUpstreamsSnapshot - состояние апстримов dns-proxy (API rev8);
+	// ok=false, если dns-proxy ещё не построен (до Start).
+	DnsUpstreamsSnapshot() (snap dnsMITMProxy.UpstreamsSnapshot, ok bool)
+	// SetDnsUpstreams - замена списка апстримов (host:port, порядок =
+	// приоритет) с персистентной записью и горячей подменой живому
+	// dns-proxy; ErrDnsUpstreamsInvalid - кривой/пустой список.
+	SetDnsUpstreams(addrs []string) error
 	LoadConfig() error
 	SaveConfig() error
 	ForceCommitIPTables() error
