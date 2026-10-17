@@ -97,7 +97,13 @@ APK_DIR := $(BUILD_DIR)/apk
 
 # Build properties
 
+# CGO_ENABLED=0 обязателен для ВСЕХ таргетов: цели - роутеры на musl
+# (OpenWrt) и Entware; на раннере x86_64 - нативная сборка, и без явного
+# нуля go включает cgo -> бинарь линкуется с glibc и на musl не запускается
+# (exit 127, кейс 0.42 на пакете 0.8.2-9). Кросс-таргеты cgo отключают
+# сами, фикс - на будущее.
 GO_FLAGS := \
+	CGO_ENABLED="0" \
 	$(if $(GOOS),GOOS="$(GOOS)") \
 	$(if $(GOARCH),GOARCH="$(GOARCH)") \
 	$(if $(GOMIPS),GOMIPS="$(GOMIPS)") \
