@@ -48,6 +48,8 @@ jobs:
     name: Build packages (${{ matrix.name }})
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -142,11 +144,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.package_outputs.outputs.package_1_path }}
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Upload package asset 2 to release
         if: ${{ github.event_name == 'release' && steps.package_outputs.outputs.package_2_path != '' }}
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.package_outputs.outputs.package_2_path }}
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ github.token }}

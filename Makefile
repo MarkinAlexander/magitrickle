@@ -104,7 +104,9 @@ GO_FLAGS := \
 	$(if $(GOARM),GOARM="$(GOARM)") \
 	$(if $(GO386),GO386="$(GO386)") \
 
-GO_PARAMS = -v -trimpath -ldflags="-X 'magitrickle/constant.Version=$(PKG_VERSION)' -w -s" $(if $(GO_TAGS),-tags "$(GO_TAGS)")
+# Бинарь обязан сообщать ревизию форка (0.8.2-revN): контроллеры (mawg)
+# включают фичи sources/dns-upstreams по "rev<N>" в constant.Version.
+GO_PARAMS = -v -trimpath -ldflags="-X 'magitrickle/constant.Version=$(PKG_VERSION)$(if $(TAG_REVISION),-rev$(TAG_REVISION))' -w -s" $(if $(GO_TAGS),-tags "$(GO_TAGS)")
 
 ifeq ($(shell id -u),0)
 	ROOT_WRAP :=
@@ -147,6 +149,7 @@ _return_export_dynamic_env:
 	@bash -c 'printf "PKG_VERSION_PRERELEASE=%q\n" "$(PKG_VERSION_PRERELEASE)"'
 	@bash -c 'printf "PRERELEASE_DATE=%q\n" "$(PRERELEASE_DATE)"'
 	@bash -c 'printf "TAG=%q\n" "$(TAG)"'
+	@bash -c 'printf "TAG_REVISION=%q\n" "$(TAG_REVISION)"'
 
 clear:
 	rm -rf ./src/frontend/dist
