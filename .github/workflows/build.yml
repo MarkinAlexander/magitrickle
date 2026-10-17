@@ -1,6 +1,7 @@
 name: Build and Package OPKG
 
 on:
+  workflow_dispatch:
   push:
     branches-ignore:
       - 'refs/tags/*'
