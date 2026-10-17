@@ -104,9 +104,10 @@ GO_FLAGS := \
 	$(if $(GOARM),GOARM="$(GOARM)") \
 	$(if $(GO386),GO386="$(GO386)") \
 
-# Бинарь обязан сообщать ревизию форка (0.8.2-revN): контроллеры (mawg)
-# включают фичи sources/dns-upstreams по "rev<N>" в constant.Version.
-GO_PARAMS = -v -trimpath -ldflags="-X 'magitrickle/constant.Version=$(PKG_VERSION)$(if $(TAG_REVISION),-rev$(TAG_REVISION))' -w -s" $(if $(GO_TAGS),-tags "$(GO_TAGS)")
+# Бинарь обязан сообщать ревизию форка (0.8.2-revN-mawg-dev): контроллеры
+# (mawg) включают фичи sources/dns-upstreams по "rev<N>" в constant.Version,
+# суффикс -mawg-dev помечает сборку mawg-форка (отличие от апстрим-бинаря).
+GO_PARAMS = -v -trimpath -ldflags="-X 'magitrickle/constant.Version=$(PKG_VERSION)$(if $(TAG_REVISION),-rev$(TAG_REVISION)-mawg-dev)' -w -s" $(if $(GO_TAGS),-tags "$(GO_TAGS)")
 
 ifeq ($(shell id -u),0)
 	ROOT_WRAP :=
