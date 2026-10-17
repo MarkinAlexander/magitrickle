@@ -6,6 +6,7 @@ import (
 
 	"magitrickle/app"
 	"magitrickle/constant"
+	"magitrickle/models"
 )
 
 // parseUpstreamAddrs: порт по умолчанию 53, явный порт, скобки ipv6,
@@ -96,5 +97,70 @@ func TestUpstreamsToFile(t *testing.T) {
 	}
 	if upstreamsToFile(nil) != nil {
 		t.Fatalf("nil должен сохраняться как nil (ключ не появляется)")
+	}
+}
+
+// схемы DoT/DoH: канонический URI в Address (порт/путь внутри), порт
+// дублируется в Port, дедуп по канонической строке; кривые схемы отвергаются
+func TestParseUpstreamAddrsSchemes(t *testing.T) {
+	ups, err := parseUpstreamAddrs([]string{
+		"tls://1.1.1.1",
+		"tls://dns.google:853",
+		"tls://1.1.1.1:853", // дубль первого (умолчание порта)
+		"https://dns.google",
+		"https://1.1.1.1/dns-query",
+		"https://dns.google/dns-query", // дубль (умолчания порт+путь)
+	})
+	if err != nil {
+		t.Fatalf("валидный список отвергнут: %v", err)
+	}
+	if len(ups) != 4 {
+		t.Fatalf("ожидались 4 уникальных: %+v", ups)
+	}
+	if ups[0].Address != "tls://1.1.1.1:853" || ups[0].Port != 853 {
+		t.Fatalf("DoT по умолчанию: %+v", ups[0])
+	}
+	if ups[1].Address != "tls://dns.google:853" {
+		t.Fatalf("DoT имя: %+v", ups[1])
+	}
+	if ups[2].Address != "https://dns.google:443/dns-query" || ups[2].Port != 443 {
+		t.Fatalf("DoH по умолчанию: %+v", ups[2])
+	}
+	if ups[3].Address != "https://1.1.1.1:443/dns-query" {
+		t.Fatalf("DoH с IP: %+v", ups[3])
+	}
+
+	for _, bad := range [][]string{
+		{"tls://"},
+		{"https://"},
+		{"http://dns.google"},
+		{"quic://dns.google"},
+		{"tls://1.1.1.1/path"},
+		{"tls://1.1.1.1:0"},
+		{"https://dns.google:0/dns-query"},
+	} {
+		if _, err := parseUpstreamAddrs(bad); !errors.Is(err, app.ErrDnsUpstreamsInvalid) {
+			t.Fatalf("список %v должен быть отвергнут, got %v", bad, err)
+		}
+	}
+}
+
+// dnsUpstreamAddrs: схемы проходят в прокси как есть, plain собирается в
+// host:port - модель с URI живёт в конфиге без потерь
+func TestDnsUpstreamAddrsSchemes(t *testing.T) {
+	c := models.AppConfigDNSProxy{Upstreams: []models.AppConfigDNSProxyServer{
+		{Address: "tls://1.1.1.1:853", Port: 853},
+		{Address: "https://dns.google:443/dns-query", Port: 443},
+		{Address: "8.8.8.8", Port: 53},
+	}}
+	got := dnsUpstreamAddrs(c)
+	want := []string{"tls://1.1.1.1:853", "https://dns.google:443/dns-query", "8.8.8.8:53"}
+	if len(got) != len(want) {
+		t.Fatalf("адреса: %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("адрес[%d] = %q, хочу %q", i, got[i], want[i])
+		}
 	}
 }

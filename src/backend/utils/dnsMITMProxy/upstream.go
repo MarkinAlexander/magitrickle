@@ -2,7 +2,11 @@ package dnsMITMProxy
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"net"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -39,8 +43,14 @@ type UpstreamHealth struct {
 
 type upstream struct {
 	addr string
-	tcp  *connPool
-	udp  *connPool
+	kind upKind
+	tcp  *connPool // plain: TCP
+	udp  *connPool // plain: UDP
+	dot  *connPool // DoT: TCP + TLS (кастомный диал)
+	dotDialAddr string
+	dotTLS      *tls.Config
+	doh         *http.Client // DoH: keep-alive внутри транспорта
+	dohURL      *url.URL
 
 	mu       sync.Mutex
 	alive    bool
@@ -73,11 +83,71 @@ type UpstreamsSnapshot struct {
 }
 
 func newUpstream(addr string, maxIdle uint) *upstream {
-	return &upstream{
-		addr:  addr,
-		tcp:   newConnPool("tcp", addr, maxIdle),
-		udp:   newConnPool("udp", addr, maxIdle),
-		alive: true, // приоритетный порядок, пока канарейка не доказала обратное
+	p, err := ParseUpstreamAddr(addr)
+	if err != nil {
+		// сюда приходят только провалидированные адреса; битый считаем
+		// plain - зонд честно пометит его мёртвым, ронять прокси нельзя
+		return &upstream{addr: addr, kind: upPlain, alive: true,
+			tcp: newConnPool("tcp", addr, maxIdle), udp: newConnPool("udp", addr, maxIdle)}
+	}
+	return newUpstreamParsed(p, maxIdle, nil)
+}
+
+// newUpstreamParsed - сборка апстрима по разобранному адресу; tlsOverride
+// подменяет TLS-конфиг в тестах (самоподписанные серверы).
+func newUpstreamParsed(p parsedUpstream, maxIdle uint, tlsOverride *tls.Config) *upstream {
+	u := &upstream{addr: p.addr, kind: p.kind, alive: true}
+	switch p.kind {
+	case upDoT:
+		u.dotDialAddr = p.dialAddr
+		u.dotTLS = tlsConfigFor(p, tlsOverride)
+		conf := u.dotTLS
+		u.dot = newConnPoolDial("tcp", p.dialAddr, maxIdle, func(ctx context.Context) (net.Conn, error) {
+			var d net.Dialer
+			raw, err := d.DialContext(ctx, "tcp", p.dialAddr)
+			if err != nil {
+				return nil, err
+			}
+			c := tls.Client(raw, conf.Clone())
+			if deadline, ok := ctx.Deadline(); ok {
+				_ = c.SetDeadline(deadline)
+			}
+			if err := c.HandshakeContext(ctx); err != nil {
+				_ = raw.Close()
+				return nil, err
+			}
+			return c, nil
+		})
+	case upDoH:
+		transport := &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSClientConfig:     tlsConfigFor(p, tlsOverride).Clone(),
+			ForceAttemptHTTP2:   true,
+			MaxIdleConnsPerHost: int(maxIdle),
+			IdleConnTimeout:     90 * time.Second,
+		}
+		u.doh = &http.Client{Transport: transport}
+		u.dohURL = p.dohURL
+	default:
+		u.tcp = newConnPool("tcp", p.addr, maxIdle)
+		u.udp = newConnPool("udp", p.addr, maxIdle)
+	}
+	return u
+}
+
+// closeAll освобождает ресурсы апстрима (вызывается менеджером).
+func (u *upstream) closeAll() {
+	if u.tcp != nil {
+		u.tcp.Close()
+	}
+	if u.udp != nil {
+		u.udp.Close()
+	}
+	if u.dot != nil {
+		u.dot.Close()
+	}
+	if u.doh != nil {
+		u.doh.CloseIdleConnections()
 	}
 }
 
@@ -167,8 +237,7 @@ func (m *upstreamManager) close() {
 	m.upstreams = nil
 	m.mu.Unlock()
 	for _, u := range ups {
-		u.tcp.Close()
-		u.udp.Close()
+		u.closeAll()
 	}
 }
 
@@ -199,8 +268,7 @@ func (m *upstreamManager) update(addrs []string, h UpstreamHealth) {
 		}
 	}
 	for _, u := range keep {
-		u.tcp.Close()
-		u.udp.Close()
+		u.closeAll()
 	}
 	m.upstreams = next
 	m.health = h
@@ -284,11 +352,11 @@ func (m *upstreamManager) probeAll(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, u := range ups {
 		wg.Add(1)
-		go func(u *upstream) {
-			defer wg.Done()
-			ok, why := canaryProbe(ctx, u.addr, timeout)
-			m.mark(u, ok, why)
-		}(u)
+			go func(u *upstream) {
+				defer wg.Done()
+				ok, why := canaryProbe(ctx, u, timeout)
+				m.mark(u, ok, why)
+			}(u)
 	}
 	wg.Wait()
 }
@@ -336,52 +404,86 @@ func (m *upstreamManager) markTransportError(u *upstream) {
 
 // canaryProbe - A-запрос канарейки напрямую в апстрим (мимо пулов, своё
 // соединение со своим таймаутом); true = в ответе есть канонический адрес.
-func canaryProbe(ctx context.Context, addr string, timeout time.Duration) (bool, string) {
+// DoT/DoH зондируются своим транспортом - канал клиента и канал зонда
+// должны совпадать, иначе канарейка не видит подмену на пути.
+func canaryProbe(ctx context.Context, u *upstream, timeout time.Duration) (bool, string) {
 	q := new(dns.Msg)
 	q.SetQuestion(dns.Fqdn(canaryDomain), dns.TypeA)
 	req, err := q.Pack()
 	if err != nil {
 		return false, "pack: " + err.Error()
 	}
+	var resp []byte
+	switch u.kind {
+	case upDoH:
+		resp, err = dohExchange(ctx, u, req, timeout)
+	case upDoT:
+		resp, err = dotExchangeOnce(ctx, u.dotDialAddr, u.dotTLS, req, timeout)
+	default:
+		resp, err = udpExchangeOnce(ctx, u.addr, q, req, timeout)
+	}
+	if err != nil {
+		return false, u.kind.String() + ": " + err.Error()
+	}
+	return canaryCheck(q.Id, resp)
+}
+
+// udpExchangeOnce - одиночный UDP-обмен (plain-зонд, как было до DoT/DoH).
+func udpExchangeOnce(ctx context.Context, addr string, q *dns.Msg, req []byte, timeout time.Duration) ([]byte, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var d net.Dialer
 	conn, err := d.DialContext(dialCtx, "udp", addr)
 	if err != nil {
-		return false, "dial: " + err.Error()
+		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if _, err = conn.Write(req); err != nil {
-		return false, "write: " + err.Error()
+		return nil, err
 	}
 	buf := make([]byte, dns.MaxMsgSize)
 	// до двух чтений: возможен чужой/запоздалый ответ с другим id
 	for attempt := 0; attempt < 2; attempt++ {
 		n, err := conn.Read(buf)
 		if err != nil {
-			return false, "read: " + err.Error()
+			return nil, err
 		}
 		msg := new(dns.Msg)
 		if err := msg.Unpack(buf[:n]); err != nil || msg.Id != q.Id {
 			continue
 		}
-		if msg.Rcode != dns.RcodeSuccess {
-			return false, "rcode " + dns.RcodeToString[msg.Rcode]
-		}
-		answers := 0
-		for _, rr := range msg.Answer {
-			if a, ok := rr.(*dns.A); ok {
-				answers++
-				if _, hit := canaryIPs[a.A.String()]; hit {
-					return true, ""
-				}
+		return buf[:n], nil
+	}
+	return nil, errAnswerMismatch
+}
+
+var errAnswerMismatch = errors.New("ответ без совпадения id")
+
+// canaryCheck - проверка ответа канарейки: rcode, непустота и наличие
+// канонического адреса (63-док: живой, но отравленный - не «жив»).
+func canaryCheck(qid uint16, resp []byte) (bool, string) {
+	msg := new(dns.Msg)
+	if err := msg.Unpack(resp); err != nil {
+		return false, "unpack: " + err.Error()
+	}
+	if msg.Id != qid {
+		return false, errAnswerMismatch.Error()
+	}
+	if msg.Rcode != dns.RcodeSuccess {
+		return false, "rcode " + dns.RcodeToString[msg.Rcode]
+	}
+	answers := 0
+	for _, rr := range msg.Answer {
+		if a, ok := rr.(*dns.A); ok {
+			answers++
+			if _, hit := canaryIPs[a.A.String()]; hit {
+				return true, ""
 			}
 		}
-		if answers == 0 {
-			return false, "пустой ответ (NXDOMAIN-перехват?)"
-		}
-		return false, "подмена: канонических адресов нет"
 	}
-	return false, "ответ без совпадения id"
+	if answers == 0 {
+		return false, "пустой ответ (NXDOMAIN-перехват?)"
+	}
+	return false, "подмена: канонических адресов нет"
 }

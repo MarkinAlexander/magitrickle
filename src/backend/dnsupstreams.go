@@ -13,8 +13,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// parseUpstreamAddrs - "8.8.8.8" / "8.8.8.8:5353" -> модель сервера
-// (порт по умолчанию 53, дубликаты схлопываются, пустых не бывает).
+// parseUpstreamAddrs - "8.8.8.8" / "8.8.8.8:5353" / "tls://1.1.1.1[:853]" /
+// "https://dns.google[:443][/dns-query]" -> модель сервера. Для схем Address
+// хранит полный канонический URI (порт и путь внутри), порт дублируется в
+// Port для порядка модели; дубликаты схлопываются по канонической строке.
 // app.ErrDnsUpstreamsInvalid - список пуст или адрес кривой.
 func parseUpstreamAddrs(addrs []string) ([]models.AppConfigDNSProxyServer, error) {
 	if len(addrs) == 0 {
@@ -26,6 +28,18 @@ func parseUpstreamAddrs(addrs []string) ([]models.AppConfigDNSProxyServer, error
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			return nil, fmt.Errorf("%w: пустой адрес в списке", app.ErrDnsUpstreamsInvalid)
+		}
+		if strings.Contains(raw, "://") {
+			pu, err := dnsMITMProxy.ParseUpstreamAddr(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", app.ErrDnsUpstreamsInvalid, err)
+			}
+			if _, dup := seen[pu.Addr()]; dup {
+				continue
+			}
+			seen[pu.Addr()] = struct{}{}
+			ups = append(ups, models.AppConfigDNSProxyServer{Address: pu.Addr(), Port: pu.Port()})
+			continue
 		}
 		address, portStr := raw, "53"
 		if host, port, err := net.SplitHostPort(raw); err == nil {

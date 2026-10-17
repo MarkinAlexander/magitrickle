@@ -114,8 +114,16 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 }
 
 func (p *DNSMITMProxy) exchangeUpstream(ctx context.Context, u *upstream, req []byte, network string) ([]byte, error) {
+	// DoH живёт своим транспортом (HTTP keep-alive), фрейминг TCP не нужен
+	if u.kind == upDoH {
+		return dohExchange(ctx, u, req, p.timeout)
+	}
 	var pool *connPool
-	if network == "tcp" {
+	tcpFraming := network == "tcp"
+	if u.kind == upDoT {
+		pool = u.dot
+		tcpFraming = true // DNS-over-TLS = TCP-фрейминг внутри TLS
+	} else if network == "tcp" {
 		pool = u.tcp
 	} else {
 		pool = u.udp
@@ -137,7 +145,7 @@ func (p *DNSMITMProxy) exchangeUpstream(ctx context.Context, u *upstream, req []
 		return nil, fmt.Errorf("failed to set deadline: %w", err)
 	}
 
-	if network == "tcp" {
+	if tcpFraming {
 		lenBuf := []byte{byte(len(req) >> 8), byte(len(req))}
 		_, err = upstreamConn.Write(lenBuf)
 		if err != nil {
@@ -153,7 +161,7 @@ func (p *DNSMITMProxy) exchangeUpstream(ctx context.Context, u *upstream, req []
 	}
 
 	var resp []byte
-	if network == "tcp" {
+	if tcpFraming {
 		// Read length prefix directly with bytes
 		lenBuf := make([]byte, 2)
 		_, err = io.ReadFull(upstreamConn, lenBuf)

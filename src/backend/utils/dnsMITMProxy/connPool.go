@@ -11,6 +11,7 @@ import (
 type connPool struct {
 	network string
 	addr    string
+	dial    func(ctx context.Context) (net.Conn, error)
 	pool    chan net.Conn
 	maxIdle uint
 	mu      sync.Mutex
@@ -18,9 +19,18 @@ type connPool struct {
 }
 
 func newConnPool(network, addr string, maxIdle uint) *connPool {
+	return newConnPoolDial(network, addr, maxIdle, func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	})
+}
+
+// newConnPoolDial - пул с кастомным диалом (DoT: TCP + TLS-хендшейк).
+func newConnPoolDial(network, addr string, maxIdle uint, dial func(ctx context.Context) (net.Conn, error)) *connPool {
 	return &connPool{
 		network: network,
 		addr:    addr,
+		dial:    dial,
 		pool:    make(chan net.Conn, maxIdle),
 		maxIdle: maxIdle,
 	}
@@ -43,8 +53,7 @@ func (p *connPool) Get(ctx context.Context) (net.Conn, error) {
 	case conn := <-p.pool:
 		return conn, nil
 	default:
-		var d net.Dialer
-		return d.DialContext(ctx, p.network, p.addr)
+		return p.dial(ctx)
 	}
 }
 

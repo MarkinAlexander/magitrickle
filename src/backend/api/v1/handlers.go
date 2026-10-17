@@ -645,7 +645,7 @@ func (h *Handler) GetDnsUpstreams(w http.ResponseWriter, r *http.Request) {
 // PutDnsUpstreams
 //
 //	@Summary		Замена списка апстримов dns-proxy
-//	@Description	Порядок = приоритет, порт по умолчанию 53; сохраняет конфиг и горячо подменяет список без рестарта демона
+//	@Description	Порядок = приоритет; plain host:port (порт по умолчанию 53), DoT tls://host[:853], DoH https://host[:443][/dns-query]; сохраняет конфиг и горячо подменяет список без рестарта демона
 //	@Tags			dns
 //	@Accept			json
 //	@Produce		json

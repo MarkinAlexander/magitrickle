@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"magitrickle/api"
@@ -22,12 +23,17 @@ import (
 	"github.com/vishvananda/netlink/nl"
 )
 
-// dnsUpstreamAddrs - адреса эффективного списка апстримов (host:port).
+// dnsUpstreamAddrs - адреса эффективного списка апстримов: plain -> host:port,
+// DoT/DoH -> полный URI как в конфиге (схему разбирает сам прокси).
 func dnsUpstreamAddrs(c models.AppConfigDNSProxy) []string {
 	servers := c.UpstreamList()
 	addrs := make([]string, 0, len(servers))
 	for _, u := range servers {
 		if u.Address == "" {
+			continue
+		}
+		if strings.Contains(u.Address, "://") {
+			addrs = append(addrs, u.Address)
 			continue
 		}
 		addrs = append(addrs, net.JoinHostPort(u.Address, strconv.Itoa(int(u.Port))))
