@@ -142,17 +142,17 @@ func dohExchange(ctx context.Context, u *upstream, req []byte, timeout time.Dura
 }
 
 // dotExchangeOnce - один DoT-обмен во временноЕ TLS-соединение (для
-// зонда-канарейки, мимо пула - как udp-зонд plain-апстримов).
-func dotExchangeOnce(ctx context.Context, dialAddr string, conf *tls.Config, req []byte, timeout time.Duration) ([]byte, error) {
+// зонда-канарейки, мимо пула - как udp-зонд plain-апстримов); диал через
+// бутстрап-резолв, если адрес - имя (SNI в conf остаётся именем).
+func dotExchangeOnce(ctx context.Context, u *upstream, req []byte, timeout time.Duration) ([]byte, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	var d net.Dialer
-	raw, err := d.DialContext(dialCtx, "tcp", dialAddr)
+	raw, err := dialUpstreamHost(dialCtx, u.bs, "tcp", u.dotDialAddr)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = raw.Close() }()
-	conn := tls.Client(raw, conf.Clone())
+	conn := tls.Client(raw, u.dotTLS.Clone())
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if err := conn.HandshakeContext(dialCtx); err != nil {
 		return nil, err

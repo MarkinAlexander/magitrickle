@@ -214,7 +214,7 @@ func TestUpdateHotSwap(t *testing.T) {
 func TestCanaryProbeVerdicts(t *testing.T) {
 	clean := "204.8.99.144"
 	s := fakeUpstreamUDP(t, &clean)
-	u := newUpstream(s, 2)
+	u := newUpstream(s, 2, nil, nil)
 	ok, why := canaryProbe(context.Background(), u, time.Second)
 	if !ok || why != "" {
 		t.Fatalf("clean: ok=%v why=%q", ok, why)
@@ -222,7 +222,7 @@ func TestCanaryProbeVerdicts(t *testing.T) {
 
 	spoof := "6.6.6.6"
 	s = fakeUpstreamUDP(t, &spoof)
-	u = newUpstream(s, 2)
+	u = newUpstream(s, 2, nil, nil)
 	ok, why = canaryProbe(context.Background(), u, time.Second)
 	if ok || !strings.Contains(why, "канонических") {
 		t.Fatalf("spoof: ok=%v why=%q", ok, why)
@@ -230,13 +230,13 @@ func TestCanaryProbeVerdicts(t *testing.T) {
 
 	empty := ""
 	s = fakeUpstreamUDP(t, &empty)
-	u = newUpstream(s, 2)
+	u = newUpstream(s, 2, nil, nil)
 	ok, why = canaryProbe(context.Background(), u, time.Second)
 	if ok || why == "" {
 		t.Fatalf("пустой ответ: ok=%v why=%q", ok, why)
 	}
 
-	u = newUpstream("127.0.0.1:1", 2)
+	u = newUpstream("127.0.0.1:1", 2, nil, nil)
 	ok, why = canaryProbe(context.Background(), u, 300*time.Millisecond)
 	if ok || why == "" {
 		t.Fatalf("мёртвый: ok=%v why=%q", ok, why)

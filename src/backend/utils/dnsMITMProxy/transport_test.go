@@ -181,7 +181,7 @@ func dotUpstream(t *testing.T, addr string) *upstream {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newUpstreamParsed(p, 2, insecureTLS())
+	return newUpstreamParsed(p, 2, insecureTLS(), nil)
 }
 
 func dohUpstream(t *testing.T, url string) *upstream {
@@ -190,7 +190,7 @@ func dohUpstream(t *testing.T, url string) *upstream {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newUpstreamParsed(p, 2, insecureTLS())
+	return newUpstreamParsed(p, 2, insecureTLS(), nil)
 }
 
 // DoT: канарейка чистая/отравленная/мёртвая + клиентский обмен с фреймингом

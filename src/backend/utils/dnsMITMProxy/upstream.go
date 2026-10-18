@@ -51,6 +51,7 @@ type upstream struct {
 	dotTLS      *tls.Config
 	doh         *http.Client // DoH: keep-alive внутри транспорта
 	dohURL      *url.URL
+	bs          *bootstrapResolver // бутстрап-резолв имени (DoT/DoH), nil = системный диал
 
 	mu       sync.Mutex
 	alive    bool
@@ -82,7 +83,7 @@ type UpstreamsSnapshot struct {
 	Upstreams []UpstreamState `json:"upstreams"`
 }
 
-func newUpstream(addr string, maxIdle uint) *upstream {
+func newUpstream(addr string, maxIdle uint, tlsOverride *tls.Config, bs *bootstrapResolver) *upstream {
 	p, err := ParseUpstreamAddr(addr)
 	if err != nil {
 		// сюда приходят только провалидированные адреса; битый считаем
@@ -90,21 +91,21 @@ func newUpstream(addr string, maxIdle uint) *upstream {
 		return &upstream{addr: addr, kind: upPlain, alive: true,
 			tcp: newConnPool("tcp", addr, maxIdle), udp: newConnPool("udp", addr, maxIdle)}
 	}
-	return newUpstreamParsed(p, maxIdle, nil)
+	return newUpstreamParsed(p, maxIdle, tlsOverride, bs)
 }
 
 // newUpstreamParsed - сборка апстрима по разобранному адресу; tlsOverride
-// подменяет TLS-конфиг в тестах (самоподписанные серверы).
-func newUpstreamParsed(p parsedUpstream, maxIdle uint, tlsOverride *tls.Config) *upstream {
-	u := &upstream{addr: p.addr, kind: p.kind, alive: true}
+// подменяет TLS-конфиг в тестах (самоподписанные серверы), bs решает имена
+// хостов DoT/DoH бутстрап-резолвом (nil - системный диалер, как до rev12).
+func newUpstreamParsed(p parsedUpstream, maxIdle uint, tlsOverride *tls.Config, bs *bootstrapResolver) *upstream {
+	u := &upstream{addr: p.addr, kind: p.kind, alive: true, bs: bs}
 	switch p.kind {
 	case upDoT:
 		u.dotDialAddr = p.dialAddr
 		u.dotTLS = tlsConfigFor(p, tlsOverride)
 		conf := u.dotTLS
 		u.dot = newConnPoolDial("tcp", p.dialAddr, maxIdle, func(ctx context.Context) (net.Conn, error) {
-			var d net.Dialer
-			raw, err := d.DialContext(ctx, "tcp", p.dialAddr)
+			raw, err := dialUpstreamHost(ctx, bs, "tcp", p.dialAddr)
 			if err != nil {
 				return nil, err
 			}
@@ -120,7 +121,11 @@ func newUpstreamParsed(p parsedUpstream, maxIdle uint, tlsOverride *tls.Config) 
 		})
 	case upDoH:
 		transport := &http.Transport{
-			DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// хост из dohURL: диал по бутстрап-IP, SNI/Host и верификация
+				// серта остаются по имени (TLSClientConfig не тронут)
+				return dialUpstreamHost(ctx, bs, network, addr)
+			},
 			TLSClientConfig:     tlsConfigFor(p, tlsOverride).Clone(),
 			ForceAttemptHTTP2:   true,
 			MaxIdleConnsPerHost: int(maxIdle),
@@ -180,6 +185,13 @@ type upstreamManager struct {
 	upstreams []*upstream
 	health    UpstreamHealth
 	maxIdle   uint
+	// tlsOverride - подмена TLS-конфига апстримов (тесты: локальные
+	// самоподписанные серверы); в проде nil.
+	tlsOverride *tls.Config
+	// bs - бутстрап-резолв имён DoH/DoT-апстримов (rev12) через plain-
+	// апстримы этого же списка; живёт вместе с менеджером, кэш переживает
+	// горячее обновление списка.
+	bs *bootstrapResolver
 
 	workerMu     sync.Mutex
 	parent       context.Context
@@ -188,6 +200,7 @@ type upstreamManager struct {
 
 func newUpstreamManager(addrs []string, maxIdle uint, h UpstreamHealth) *upstreamManager {
 	m := &upstreamManager{maxIdle: maxIdle, health: h}
+	m.bs = newBootstrapResolver(m.bootstrapServers)
 	m.upstreams = make([]*upstream, 0, len(addrs))
 	seen := make(map[string]struct{}, len(addrs))
 	for _, a := range addrs {
@@ -198,9 +211,27 @@ func newUpstreamManager(addrs []string, maxIdle uint, h UpstreamHealth) *upstrea
 			continue // дубликат адреса - один апстрим
 		}
 		seen[a] = struct{}{}
-		m.upstreams = append(m.upstreams, newUpstream(a, maxIdle))
+		m.upstreams = append(m.upstreams, newUpstream(a, m.maxIdle, m.tlsOverride, m.bs))
 	}
 	return m
+}
+
+// bootstrapServers - plain-апстримы каскада для бутстрап-резолва, живые
+// вперёд (порядок candidates()); только IP-литералы - plain с именем
+// резолвить нечем (цикл), его бутстрап пропускает.
+func (m *upstreamManager) bootstrapServers() []string {
+	out := make([]string, 0, 2)
+	for _, u := range m.candidates() {
+		if u.kind != upPlain {
+			continue
+		}
+		host, _, err := net.SplitHostPort(u.addr)
+		if err != nil || net.ParseIP(host) == nil {
+			continue
+		}
+		out = append(out, u.addr)
+	}
+	return out
 }
 
 // start - запуск воркера зондов (работает при включённой политике и
@@ -264,7 +295,7 @@ func (m *upstreamManager) update(addrs []string, h UpstreamHealth) {
 			next = append(next, u)
 			delete(keep, a)
 		} else {
-			next = append(next, newUpstream(a, m.maxIdle))
+			next = append(next, newUpstream(a, m.maxIdle, m.tlsOverride, m.bs))
 		}
 	}
 	for _, u := range keep {
@@ -418,7 +449,7 @@ func canaryProbe(ctx context.Context, u *upstream, timeout time.Duration) (bool,
 	case upDoH:
 		resp, err = dohExchange(ctx, u, req, timeout)
 	case upDoT:
-		resp, err = dotExchangeOnce(ctx, u.dotDialAddr, u.dotTLS, req, timeout)
+		resp, err = dotExchangeOnce(ctx, u, req, timeout)
 	default:
 		resp, err = udpExchangeOnce(ctx, u.addr, q, req, timeout)
 	}
