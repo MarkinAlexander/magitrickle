@@ -210,7 +210,7 @@ rebuild_backend:
 # Frontend
 
 $(STAMPS_DIR)/download-frontend: $(FRONTEND_DEPENDENCIES)
-	cd ./src/frontend && npm install
+	cd ./src/frontend || exit 1; ok=0; 	for attempt in 1 2 3 4 5; do 		if npm install; then ok=1; break; fi; 		echo "npm install failed (attempt $$attempt/5), retrying in 10s..."; 		sleep 10; 	done; 	if [ "$$ok" != "1" ]; then 		echo "npm install failed after 5 attempts (network?)" >&2; 		exit 1; 	fi
 
 	@mkdir -p $(STAMPS_DIR)
 	@touch "$(STAMPS_DIR)/download-frontend"
