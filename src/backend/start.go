@@ -23,10 +23,9 @@ import (
 	"github.com/vishvananda/netlink/nl"
 )
 
-// dnsUpstreamAddrs - адреса эффективного списка апстримов: plain -> host:port,
-// DoT/DoH -> полный URI как в конфиге (схему разбирает сам прокси).
-func dnsUpstreamAddrs(c models.AppConfigDNSProxy) []string {
-	servers := c.UpstreamList()
+// addrList - адреса списка серверов: plain -> host:port, DoT/DoH ->
+// полный URI как в конфиге (схему разбирает сам прокси).
+func addrList(servers []models.AppConfigDNSProxyServer) []string {
 	addrs := make([]string, 0, len(servers))
 	for _, u := range servers {
 		if u.Address == "" {
@@ -39,6 +38,32 @@ func dnsUpstreamAddrs(c models.AppConfigDNSProxy) []string {
 		addrs = append(addrs, net.JoinHostPort(u.Address, strconv.Itoa(int(u.Port))))
 	}
 	return addrs
+}
+
+// dnsUpstreamAddrs - адреса эффективного списка апстримов: plain -> host:port,
+// DoT/DoH -> полный URI как в конфиге (схему разбирает сам прокси).
+func dnsUpstreamAddrs(c models.AppConfigDNSProxy) []string {
+	return addrList(c.UpstreamList())
+}
+
+// dnsZoneRoutes - таблица зон для прокси (rev13): модель конфига ->
+// маршруты зон с адресами их апстримов.
+func dnsZoneRoutes(c models.AppConfigDNSProxy) []dnsMITMProxy.ZoneRoute {
+	if len(c.Zones) == 0 {
+		return nil
+	}
+	routes := make([]dnsMITMProxy.ZoneRoute, 0, len(c.Zones))
+	for _, z := range c.Zones {
+		if z.Zone == "" {
+			continue
+		}
+		routes = append(routes, dnsMITMProxy.ZoneRoute{
+			Zone:          z.Zone,
+			UpstreamAddrs: addrList(z.Upstreams),
+			FallbackOpen:  z.FallbackOpen,
+		})
+	}
+	return routes
 }
 
 // dnsHealthConfig - политика зондов апстримов из модели конфига.
@@ -76,6 +101,9 @@ func (a *App) Start(ctx context.Context) (err error) {
 		a.config.DNSProxy.Timeout,
 		dnsHealthConfig(a.config.DNSProxy.Health),
 	)
+	// стартовая таблица зон - до StartHealthWorker (воркеры зонных
+	// менеджеров возьмут контекст оттуда)
+	a.dnsMITM.UpdateZones(dnsZoneRoutes(a.config.DNSProxy), dnsHealthConfig(a.config.DNSProxy.Health))
 	a.dnsMITM.RequestHook = a.dnsRequestHook
 	a.dnsMITM.ResponseHook = a.dnsResponseHook
 	defer func() {

@@ -671,3 +671,85 @@ func (h *Handler) PutDnsUpstreams(w http.ResponseWriter, r *http.Request) {
 	}
 	h.GetDnsUpstreams(w, r)
 }
+
+// GetDnsZones
+//
+//	@Summary		Состояние зонного DNS
+//	@Description	Таблица зон со стейтом апстримов каждой (rev13); читается контроллером mawg
+//	@Tags			dns
+//	@Produce		json
+//	@Success		200	{object}	types.DnsZonesRes
+//	@Router			/api/v1/dns/zones [get]
+func (h *Handler) GetDnsZones(w http.ResponseWriter, r *http.Request) {
+	snaps, ok := h.app.DnsZonesSnapshot()
+	if !ok {
+		utils.WriteJson(w, http.StatusOK, types.DnsZonesRes{
+			Available: false,
+			Zones:     []types.DnsZoneRes{},
+		})
+		return
+	}
+	res := types.DnsZonesRes{
+		Available: true,
+		Zones:     make([]types.DnsZoneRes, 0, len(snaps)),
+	}
+	for _, s := range snaps {
+		zr := types.DnsZoneRes{
+			Zone:      s.Zone,
+			Fallback:  s.FallbackOpen,
+			Upstreams: make([]types.DnsUpstreamState, 0, len(s.Upstreams.Upstreams)),
+		}
+		for _, u := range s.Upstreams.Upstreams {
+			zr.Upstreams = append(zr.Upstreams, types.DnsUpstreamState{
+				Address:  u.Address,
+				Alive:    u.Alive,
+				Active:   u.Active,
+				Fails:    u.Fails,
+				Oks:      u.Oks,
+				LastSwap: u.LastSwap,
+				Reason:   u.Reason,
+			})
+		}
+		res.Zones = append(res.Zones, zr)
+	}
+	utils.WriteJson(w, http.StatusOK, res)
+}
+
+// PutDnsZones
+//
+//	@Summary		Замена таблицы зон dns-proxy
+//	@Description	Порядок апстримов зоны = приоритет; без Fallback - fail-closed (SERVFAIL при полном отвале зоны); сохраняет конфиг и горячо подменяет таблицу без рестарта демона; пустой список = очистка
+//	@Tags			dns
+//	@Accept			json
+//	@Produce		json
+//	@Param			json	body	types.DnsZonesPutReq	true	"Новая таблица зон"
+//	@Success		200	{object}	types.DnsZonesRes
+//	@Failure		400	{object}	types.ErrorRes
+//	@Failure		500	{object}	types.ErrorRes
+//	@Router			/api/v1/dns/zones [put]
+func (h *Handler) PutDnsZones(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[types.DnsZonesPutReq](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	zones := make([]models.AppConfigDNSProxyZone, 0, len(req.Zones))
+	for _, z := range req.Zones {
+		zm := models.AppConfigDNSProxyZone{Zone: z.Zone, FallbackOpen: z.Fallback}
+		zm.Upstreams = make([]models.AppConfigDNSProxyServer, 0, len(z.Upstreams))
+		for _, a := range z.Upstreams {
+			zm.Upstreams = append(zm.Upstreams, models.AppConfigDNSProxyServer{Address: a})
+		}
+		zones = append(zones, zm)
+	}
+	if err := h.app.SetDnsZones(zones); err != nil {
+		if errors.Is(err, app.ErrDnsZonesInvalid) {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+		} else {
+			log.Error().Err(err).Msg("failed to set dns zones")
+			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	h.GetDnsZones(w, r)
+}

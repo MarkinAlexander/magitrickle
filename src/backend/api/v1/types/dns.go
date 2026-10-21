@@ -40,3 +40,35 @@ type DnsUpstreamState struct {
 type DnsUpstreamsPutReq struct {
 	Upstreams []string `json:"upstreams"`
 }
+
+// DnsZonesRes - состояние зонного DNS (API rev13): таблица зон со стейтом
+// апстримов каждой; читается контроллером mawg для карточки «Зонные DNS».
+type DnsZonesRes struct {
+	// Available=false - dns-proxy ещё не построен (демон до Start);
+	// Zones при этом пуст.
+	Available bool         `json:"available"`
+	Zones     []DnsZoneRes `json:"zones"`
+}
+
+// DnsZoneRes - одна зона: имя без хвостовой точки, fallback-политика и
+// стейт её апстримов (порядок = приоритет, active - первый живой).
+type DnsZoneRes struct {
+	Zone      string             `json:"zone" example:"corp.example.com"`
+	Fallback  bool               `json:"fallback"`
+	Upstreams []DnsUpstreamState `json:"upstreams"`
+}
+
+// DnsZonePut - запись редактора зон (rev13): имя зоны (покрывает себя и
+// все поддомены), её упорядоченные апстримы (формат общего каскада) и
+// Fallback - разрешить деградацию в общий каскад при полном отвале зоны
+// (по умолчанию false = fail-closed, SERVFAIL).
+type DnsZonePut struct {
+	Zone      string   `json:"zone"`
+	Upstreams []string `json:"upstreams"`
+	Fallback  bool     `json:"fallback"`
+}
+
+// DnsZonesPutReq - замена всей таблицы зон (PUT); пустой список = очистка.
+type DnsZonesPutReq struct {
+	Zones []DnsZonePut `json:"zones"`
+}

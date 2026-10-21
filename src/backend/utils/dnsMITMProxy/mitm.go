@@ -27,8 +27,17 @@ type DNSMITMProxy struct {
 	// Private fields
 	bufferPool *sync.Pool
 	upstreams  *upstreamManager
-	semaphore  chan struct{}
-	timeout    time.Duration
+	// zones - таблица зонных маршрутов (rev13): менеджеры зон с собственными
+	// апстримами, longest-suffix матч имени запроса.
+	zonesMu sync.RWMutex
+	zones   []zoneEntry
+	// healthCtx - контекст зондов (StartHealthWorker); зонные менеджеры,
+	// построенные позже, стартуют свои воркеры на нём же.
+	healthCtx context.Context
+	// maxIdle - размер пулов соединений (нужен зонным менеджерам).
+	maxIdle  uint
+	semaphore chan struct{}
+	timeout   time.Duration
 }
 
 // NewDNSMITMProxy принимает упорядоченный список апстримов (приоритет =
@@ -44,14 +53,26 @@ func NewDNSMITMProxy(upstreamAddrs []string, maxIdleConns, maxConcurrent uint, t
 		},
 		timeout:   timeout,
 		upstreams: newUpstreamManager(upstreamAddrs, maxIdleConns, health),
+		maxIdle:   maxIdleConns,
 		semaphore: make(chan struct{}, maxConcurrent),
 	}
 }
 
-// StartHealthWorker запускает воркер зондов-канареек (живёт только при
-// включённой политике и >=2 апстримах).
+// StartHealthWorker запускает воркеры зондов (общий каскад - канарейки,
+// зоны - liveness; воркер общего каскада живёт только при включённой
+// политике и >=2 апстримах, зонные - всегда).
 func (p *DNSMITMProxy) StartHealthWorker(ctx context.Context) {
+	p.healthCtx = ctx
 	p.upstreams.start(ctx)
+	p.zonesMu.RLock()
+	mgrs := make([]*upstreamManager, 0, len(p.zones))
+	for _, e := range p.zones {
+		mgrs = append(mgrs, e.mgr)
+	}
+	p.zonesMu.RUnlock()
+	for _, m := range mgrs {
+		m.start(ctx)
+	}
 }
 
 // UpdateUpstreams - горячая подмена списка апстримов и политики зондов
@@ -68,18 +89,30 @@ func (p *DNSMITMProxy) UpstreamsSnapshot() UpstreamsSnapshot {
 
 // Close closes all connection pools and releases resources
 func (p *DNSMITMProxy) Close() error {
+	p.zonesMu.Lock()
+	zones := p.zones
+	p.zones = nil
+	p.zonesMu.Unlock()
+	for _, e := range zones {
+		e.mgr.close()
+	}
 	p.upstreams.close()
 	return nil
 }
 
+// requestUpstreamDNS - общий каскад (запрос вне зон).
 func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, network string) ([]byte, error) {
-	// перебор кандидатов: активный (первый живой) -> остальные живые ->
-	// мёртвые по приоритету (деградация); ошибка транспорта апстрима
-	// считает его цикл «болен» (возврат - только по канарейке).
-	// Бюджет делится на попытки (мин 300мс на попытку) - иначе мёртвый
-	// первый апстрим (дроп пакетов) съедает весь дедлайн клиента, до
-	// живых дело не доходит (та же эмпирика Фазы E, что у зонда mawg)
-	candidates := p.upstreams.candidates()
+	return p.exchangeVia(ctx, p.upstreams, req, network)
+}
+
+// exchangeVia - перебор кандидатов менеджера: активный (первый живой) ->
+// остальные живые -> мёртвые по приоритету (деградация); ошибка транспорта
+// апстрима считает его цикл «болен» (возврат - только по зонду).
+// Бюджет делится на попытки (мин 300мс на попытку) - иначе мёртвый
+// первый апстрим (дроп пакетов) съедает весь дедлайн клиента, до
+// живых дело не доходит (та же эмпирика Фазы E, что у зонда mawg)
+func (p *DNSMITMProxy) exchangeVia(ctx context.Context, m *upstreamManager, req []byte, network string) ([]byte, error) {
+	candidates := m.candidates()
 	if len(candidates) == 0 {
 		return nil, errors.New("no upstreams configured")
 	}
@@ -100,7 +133,7 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 			return resp, nil
 		}
 		lastErr = err
-		p.upstreams.markTransportError(u)
+		m.markTransportError(u)
 		budget -= attempt
 		if budget <= 0 {
 			break
@@ -111,6 +144,39 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 		lastErr = errors.New("no upstreams configured")
 	}
 	return nil, fmt.Errorf("all upstreams failed: %w", lastErr)
+}
+
+// upstreamResponse - выбор источника ответа: зона (longest-suffix) ->
+// её собственный каскад; серверы зоны не ответили -> SERVFAIL клиенту
+// (fail-closed: имена зоны не утекают в общий список) и только при
+// FallbackOpen - общий каскад. Вне зон - общий каскад как раньше.
+func (p *DNSMITMProxy) upstreamResponse(ctx context.Context, reqMsg *dns.Msg, req []byte, network string) ([]byte, error) {
+	if len(reqMsg.Question) > 0 {
+		p.zonesMu.RLock()
+		e := p.matchZone(reqMsg.Question[0].Name)
+		p.zonesMu.RUnlock()
+		if e != nil {
+			resp, err := p.exchangeVia(ctx, e.mgr, req, network)
+			if err == nil {
+				return resp, nil
+			}
+			if !e.fallbackOpen {
+				log.Warn().Str("zone", e.suffix).Err(err).Msg("zone upstreams failed, fail-closed SERVFAIL")
+				return servfailPack(reqMsg)
+			}
+			log.Warn().Str("zone", e.suffix).Err(err).Msg("zone upstreams failed, fallback to general cascade")
+		}
+	}
+	return p.exchangeVia(ctx, p.upstreams, req, network)
+}
+
+// servfailPack - честный SERVFAIL вместо молчаливого таймаута: клиент
+// сразу видит отказ зоны, а не ждёт дедлайн.
+func servfailPack(req *dns.Msg) ([]byte, error) {
+	m := new(dns.Msg)
+	m.SetRcode(req, dns.RcodeServerFailure)
+	m.RecursionAvailable = true
+	return m.Pack()
 }
 
 func (p *DNSMITMProxy) exchangeUpstream(ctx context.Context, u *upstream, req []byte, network string) ([]byte, error) {
@@ -208,7 +274,7 @@ func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req 
 	}
 
 	var reqMsg dns.Msg
-	if p.RequestHook != nil || p.ResponseHook != nil {
+	if p.RequestHook != nil || p.ResponseHook != nil || p.zonesCount() > 0 {
 		err := reqMsg.Unpack(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse request: %w", err)
@@ -241,7 +307,7 @@ func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req 
 		return nil, ctx.Err()
 	}
 
-	resp, err := p.requestUpstreamDNS(ctx, req, network)
+	resp, err := p.upstreamResponse(ctx, &reqMsg, req, network)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}

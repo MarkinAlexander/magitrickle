@@ -31,6 +31,7 @@ type AppConfigDNSProxy struct {
 	Host            AppConfigDNSProxyServer
 	Upstream        AppConfigDNSProxyServer
 	Upstreams       []AppConfigDNSProxyServer
+	Zones           []AppConfigDNSProxyZone
 	Health          AppConfigDNSProxyHealth
 	DisableRemap53  bool
 	DisableFakePTR  bool
@@ -38,6 +39,17 @@ type AppConfigDNSProxy struct {
 	MaxIdleConns    uint
 	MaxConcurrent   uint
 	Timeout         time.Duration
+}
+
+// AppConfigDNSProxyZone - зонный DNS (rev13): зона (lowercase, без
+// хвостовой точки, покрывает себя и поддомены), её упорядоченные
+// апстримы (адрес с схемой как у общего каскада: plain "8.8.8.8:53" /
+// tls:// / https://) и FallbackOpen - деградация в общий каскад при
+// полном отвале (по умолчанию fail-closed, SERVFAIL).
+type AppConfigDNSProxyZone struct {
+	Zone         string
+	Upstreams    []AppConfigDNSProxyServer
+	FallbackOpen bool
 }
 
 type AppConfigDNSProxyServer struct {

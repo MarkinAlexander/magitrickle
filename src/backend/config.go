@@ -34,6 +34,21 @@ func upstreamsToFile(ups []models.AppConfigDNSProxyServer) *[]config.DNSProxySer
 	return &out
 }
 
+// zonesToFile - таблица зон для файла конфига; nil остаётся nil (ключ не
+// появляется), пустой список - сознательная очистка зон (записывается
+// как пустой ключ).
+func zonesToFile(zones []models.AppConfigDNSProxyZone) *[]config.DNSProxyZone {
+	if zones == nil {
+		return nil
+	}
+	out := make([]config.DNSProxyZone, 0, len(zones))
+	for _, z := range zones {
+		zone, fallback := z.Zone, z.FallbackOpen
+		out = append(out, config.DNSProxyZone{Zone: &zone, Upstreams: upstreamsToFile(z.Upstreams), Fallback: &fallback})
+	}
+	return &out
+}
+
 const cfgFolderLocation = constant.AppStateDir
 const cfgFileLocation = cfgFolderLocation + "/config.yaml"
 
@@ -89,6 +104,33 @@ func (a *App) LoadConfig() error {
 				}
 				a.config.DNSProxy.Upstreams = ups
 			}
+			if cfg.App.DNSProxy.Zones != nil {
+				zones := make([]models.AppConfigDNSProxyZone, 0, len(*cfg.App.DNSProxy.Zones))
+				for _, z := range *cfg.App.DNSProxy.Zones {
+					zm := models.AppConfigDNSProxyZone{}
+					applyIfSet(&zm.Zone, z.Zone)
+					applyIfSet(&zm.FallbackOpen, z.Fallback)
+					if z.Upstreams != nil {
+						ups := make([]models.AppConfigDNSProxyServer, 0, len(*z.Upstreams))
+						for _, u := range *z.Upstreams {
+							s := models.AppConfigDNSProxyServer{}
+							applyIfSet(&s.Address, u.Address)
+							applyIfSet(&s.Port, u.Port)
+							ups = append(ups, s)
+						}
+						zm.Upstreams = ups
+					}
+					// кривую запись выкидываем (конфиг могли править
+					// руками), как sources групп
+					if normalizeZoneName(zm.Zone) == "" || len(zm.Upstreams) == 0 {
+						log.Warn().Str("zone", zm.Zone).Msg("dropping invalid dns zone from config")
+						continue
+					}
+					zm.Zone = normalizeZoneName(zm.Zone)
+					zones = append(zones, zm)
+				}
+				a.config.DNSProxy.Zones = zones
+			}
 			if cfg.App.DNSProxy.Health != nil {
 				applyIfSet(&a.config.DNSProxy.Health.Enabled, cfg.App.DNSProxy.Health.Enabled)
 				applyIfSet(&a.config.DNSProxy.Health.Interval, cfg.App.DNSProxy.Health.Interval)
@@ -141,10 +183,11 @@ func (a *App) LoadConfig() error {
 		applyIfSet(&a.config.LogLevel, cfg.App.LogLevel)
 	}
 
-	// горячая подмена апстримов живому dns-proxy (SIGHUP без рестарта
-	// демона; до Start() a.dnsMITM == nil - подменять нечего)
+	// горячая подмена апстримов и зон живому dns-proxy (SIGHUP без
+	// рестарта демона; до Start() a.dnsMITM == nil - подменять нечего)
 	if a.dnsMITM != nil {
 		a.dnsMITM.UpdateUpstreams(dnsUpstreamAddrs(a.config.DNSProxy), dnsHealthConfig(a.config.DNSProxy.Health))
+		a.dnsMITM.UpdateZones(dnsZoneRoutes(a.config.DNSProxy), dnsHealthConfig(a.config.DNSProxy.Health))
 	}
 
 	a.subscriptionSyncMu.Lock()
@@ -231,6 +274,7 @@ func (a *App) SaveConfig() error {
 					Port:    &a.config.DNSProxy.Upstream.Port,
 				},
 				Upstreams: upstreamsToFile(a.config.DNSProxy.Upstreams),
+				Zones:     zonesToFile(a.config.DNSProxy.Zones),
 				Health: &config.DNSProxyHealth{
 					Enabled:       &a.config.DNSProxy.Health.Enabled,
 					Interval:      &a.config.DNSProxy.Health.Interval,

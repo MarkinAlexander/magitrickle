@@ -19,6 +19,7 @@ var (
 	ErrSubscriptionInvalid  = errors.New("subscription invalid")
 	ErrSubscriptionFetch    = errors.New("subscription fetch failed")
 	ErrDnsUpstreamsInvalid  = errors.New("dns upstreams invalid")
+	ErrDnsZonesInvalid      = errors.New("dns zones invalid")
 )
 
 type SubscriptionSyncResult struct {
@@ -50,6 +51,13 @@ type Main interface {
 	// приоритет) с персистентной записью и горячей подменой живому
 	// dns-proxy; ErrDnsUpstreamsInvalid - кривой/пустой список.
 	SetDnsUpstreams(addrs []string) error
+	// DnsZonesSnapshot - состояние таблицы зон dns-proxy (API rev13);
+	// ok=false, если dns-proxy ещё не построен (до Start).
+	DnsZonesSnapshot() (snap []dnsMITMProxy.ZoneSnapshot, ok bool)
+	// SetDnsZones - замена таблицы зон (API rev13) с персистентной
+	// записью и горячей подменой живому dns-proxy; ErrDnsZonesInvalid -
+	// кривая зона/пустой список её апстримов. Пустой список = очистка.
+	SetDnsZones(zones []models.AppConfigDNSProxyZone) error
 	LoadConfig() error
 	SaveConfig() error
 	ForceCommitIPTables() error

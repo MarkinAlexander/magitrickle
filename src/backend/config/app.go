@@ -33,6 +33,10 @@ type DNSProxy struct {
 	// Upstreams - упорядоченный список апстримов (приоритет = порядок,
 	// 43-док §5); непустой список вытесняет одиночный Upstream.
 	Upstreams *[]DNSProxyServer `yaml:"upstreams"`
+	// Zones - зонный DNS (rev13): доменные зоны с собственными
+	// упорядоченными апстримами; запрос имени из зоны обслуживает
+	// список зоны, общий каскад не участвует (fail-closed по умолчанию).
+	Zones *[]DNSProxyZone `yaml:"zones"`
 	// Health - зонды-канарейки апстримов с гистерезисом K/M (46-док §3).
 	Health          *DNSProxyHealth `yaml:"health"`
 	DisableRemap53  *bool           `yaml:"disableRemap53"`
@@ -41,6 +45,17 @@ type DNSProxy struct {
 	MaxIdleConns    *uint           `yaml:"maxIdleConns"`
 	MaxConcurrent   *uint           `yaml:"maxConcurrent"`
 	Timeout         *time.Duration  `yaml:"timeout"`
+}
+
+// DNSProxyZone - запись зонного DNS (rev13): имя зоны (без хвостовой
+// точки; зона покрывает себя и все поддомены), упорядоченный список её
+// апстримов (тот же формат, что у общего каскада) и Fallback - разрешить
+// ли деградацию в общий каскад, когда не ответил ни один сервер зоны
+// (по умолчанию false = fail-closed, SERVFAIL).
+type DNSProxyZone struct {
+	Zone      *string           `yaml:"zone"`
+	Upstreams *[]DNSProxyServer `yaml:"upstreams"`
+	Fallback  *bool             `yaml:"fallback"`
 }
 
 type DNSProxyHealth struct {

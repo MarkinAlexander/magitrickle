@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -192,6 +193,10 @@ type upstreamManager struct {
 	// апстримы этого же списка; живёт вместе с менеджером, кэш переживает
 	// горячее обновление списка.
 	bs *bootstrapResolver
+	// probeName - непустой только у ЗОННЫХ менеджеров (rev13): зонд
+	// liveness A-запросом самого имени зоны (любой валидный ответ = жив);
+	// пустой = общий каскад с канарейкой-контент-чеком.
+	probeName string
 
 	workerMu     sync.Mutex
 	parent       context.Context
@@ -213,6 +218,15 @@ func newUpstreamManager(addrs []string, maxIdle uint, h UpstreamHealth) *upstrea
 		seen[a] = struct{}{}
 		m.upstreams = append(m.upstreams, newUpstream(a, m.maxIdle, m.tlsOverride, m.bs))
 	}
+	return m
+}
+
+// newZoneUpstreamManager - менеджер зоны (rev13): та же машина перебора
+// и здоровья, но зонд - liveness A-запросом имени зоны (контент-канарейка
+// к корпоративному резолверу неприменима).
+func newZoneUpstreamManager(suffix string, addrs []string, maxIdle uint, h UpstreamHealth) *upstreamManager {
+	m := newUpstreamManager(addrs, maxIdle, h)
+	m.probeName = strings.TrimSuffix(suffix, ".")
 	return m
 }
 
@@ -376,6 +390,7 @@ func (m *upstreamManager) probeAll(ctx context.Context) {
 	ups := make([]*upstream, len(m.upstreams))
 	copy(ups, m.upstreams)
 	timeout := m.health.Timeout
+	probeName := m.probeName
 	m.mu.RUnlock()
 	if timeout <= 0 {
 		timeout = 2 * time.Second
@@ -383,18 +398,25 @@ func (m *upstreamManager) probeAll(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, u := range ups {
 		wg.Add(1)
-			go func(u *upstream) {
-				defer wg.Done()
-				ok, why := canaryProbe(ctx, u, timeout)
-				m.mark(u, ok, why)
-			}(u)
+		go func(u *upstream) {
+			defer wg.Done()
+			var ok bool
+			var why string
+			if probeName != "" {
+				ok, why = livenessProbe(ctx, u, probeName, timeout)
+			} else {
+				ok, why = canaryProbe(ctx, u, timeout)
+			}
+			m.mark(u, ok, why)
+		}(u)
 	}
 	wg.Wait()
 }
 
 // mark - цикл зонда одного апстрима: K неудач подряд -> dead, M успехов
-// подряд и не чаще раза в RestoreGap -> alive (46-док §3). Успех считается
-// ТОЛЬКО чистой канарейкой: отравленный «живой» апстрим не вернётся.
+// подряд и не чаще раза в RestoreGap -> alive (46-док §3). Успех - чистая
+// канарейка (общий каскад) или любой валидный ответ (зоны, liveness):
+// отравленный «живой» апстрим общего каскада не вернётся.
 func (m *upstreamManager) mark(u *upstream, ok bool, why string) {
 	m.mu.RLock()
 	h := m.health
@@ -411,7 +433,7 @@ func (m *upstreamManager) mark(u *upstream, ok bool, why string) {
 			u.oks = 0
 			u.lastSwap = now
 			u.reason = ""
-			log.Info().Str("upstream", u.addr).Msg("dns upstream restored (canary clean)")
+			log.Info().Str("upstream", u.addr).Msg("dns upstream restored (probe clean)")
 		}
 		return
 	}
@@ -422,7 +444,7 @@ func (m *upstreamManager) mark(u *upstream, ok bool, why string) {
 		u.fails = 0
 		u.lastSwap = now
 		u.reason = why
-		log.Warn().Str("upstream", u.addr).Str("reason", why).Msg("dns upstream marked dead (canary)")
+		log.Warn().Str("upstream", u.addr).Str("reason", why).Msg("dns upstream marked dead (probe)")
 	}
 }
 
