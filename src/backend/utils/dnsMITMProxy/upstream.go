@@ -197,6 +197,11 @@ type upstreamManager struct {
 	// liveness A-запросом самого имени зоны (любой валидный ответ = жив);
 	// пустой = общий каскад с канарейкой-контент-чеком.
 	probeName string
+	// stagger - пауза между стартами проб соседних апстримов (rev14):
+	// залп «все параллельно» даёт всплеск CPU высотой в сумму проб
+	// (каждое шифрованное зондирование - свежее TLS-рукопожатие), разнос
+	// пиков снижает нагрузку без изменения вердиктов.
+	stagger time.Duration
 
 	workerMu     sync.Mutex
 	parent       context.Context
@@ -204,7 +209,7 @@ type upstreamManager struct {
 }
 
 func newUpstreamManager(addrs []string, maxIdle uint, h UpstreamHealth) *upstreamManager {
-	m := &upstreamManager{maxIdle: maxIdle, health: h}
+	m := &upstreamManager{maxIdle: maxIdle, health: h, stagger: 500 * time.Millisecond}
 	m.bs = newBootstrapResolver(m.bootstrapServers)
 	m.upstreams = make([]*upstream, 0, len(addrs))
 	seen := make(map[string]struct{}, len(addrs))
@@ -391,15 +396,26 @@ func (m *upstreamManager) probeAll(ctx context.Context) {
 	copy(ups, m.upstreams)
 	timeout := m.health.Timeout
 	probeName := m.probeName
+	stagger := m.stagger
 	m.mu.RUnlock()
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
 	var wg sync.WaitGroup
-	for _, u := range ups {
+	for i, u := range ups {
 		wg.Add(1)
-		go func(u *upstream) {
+		go func(i int, u *upstream) {
 			defer wg.Done()
+			// stagger (rev14): i-й апстрим стартует через i пауз после
+			// первого; вердикты не меняются - mark() считает циклы по
+			// каждому апстриму независимо
+			if d := time.Duration(i) * stagger; d > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(d):
+				}
+			}
 			var ok bool
 			var why string
 			if probeName != "" {
@@ -408,7 +424,7 @@ func (m *upstreamManager) probeAll(ctx context.Context) {
 				ok, why = canaryProbe(ctx, u, timeout)
 			}
 			m.mark(u, ok, why)
-		}(u)
+		}(i, u)
 	}
 	wg.Wait()
 }

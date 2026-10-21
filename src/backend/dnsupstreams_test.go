@@ -3,6 +3,7 @@ package magitrickle
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"magitrickle/app"
 	"magitrickle/constant"
@@ -51,7 +52,7 @@ func TestParseUpstreamAddrs(t *testing.T) {
 func TestSetDnsUpstreamsModel(t *testing.T) {
 	a := &App{config: constant.DefaultAppConfig}
 
-	if err := a.SetDnsUpstreams(nil); !errors.Is(err, app.ErrDnsUpstreamsInvalid) {
+	if err := a.SetDnsUpstreams([]string{}, nil); !errors.Is(err, app.ErrDnsUpstreamsInvalid) {
 		t.Fatalf("пустой список должен отвергаться: %v", err)
 	}
 	if a.config.DNSProxy.Upstreams != nil {
@@ -164,3 +165,85 @@ func TestDnsUpstreamAddrsSchemes(t *testing.T) {
 		}
 	}
 }
+
+// rev14: health-патч в SetDnsUpstreams - nil addrs = список не трогать,
+// nil-поля патча = поле не трогать, диапазоны валидируются ДО записи
+func TestSetDnsUpstreamsHealthPatch(t *testing.T) {
+	a := &App{config: constant.DefaultAppConfig}
+	def := constant.DefaultAppConfig.DNSProxy.Health
+
+	ups, err := parseUpstreamAddrs([]string{"8.8.8.8", "77.88.8.8:53"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.config.DNSProxy.Upstreams = ups
+
+	// nil addrs + nil health - честный no-op
+	if err := a.SetDnsUpstreams(nil, nil); err != nil {
+		t.Fatalf("no-op должен проходить: %v", err)
+	}
+	if len(a.config.DNSProxy.UpstreamList()) != 2 {
+		t.Fatalf("список потерян при no-op: %+v", a.config.DNSProxy.UpstreamList())
+	}
+
+	// частичный патч: интервал и enabled меняются, остальное - дефолт
+	i10 := uint(10)
+	on := true
+	f5 := uint(5)
+	if err := a.SetDnsUpstreams(nil, &models.AppConfigDNSProxyHealthPatch{
+		Enabled: &on, IntervalSec: &i10, FailCycles: &f5,
+	}); err != nil {
+		t.Fatalf("частичный патч отвергнут: %v", err)
+	}
+	h := a.config.DNSProxy.Health
+	if !h.Enabled || h.Interval != 10*time.Second || h.FailCycles != 5 {
+		t.Fatalf("частичный патч не лёг: %+v", h)
+	}
+	if h.Timeout != def.Timeout || h.RestoreCycles != def.RestoreCycles || h.RestoreGap != def.RestoreGap {
+		t.Fatalf("nil-поля патча трогать нельзя: %+v (дефолт %+v)", h, def)
+	}
+
+	// здоровье-конверсии: секунды -> длительности
+	gap0 := uint(0)
+	t3 := uint(3)
+	if err := a.SetDnsUpstreams(nil, &models.AppConfigDNSProxyHealthPatch{
+		TimeoutSec: &t3, RestoreGapSec: &gap0,
+	}); err != nil {
+		t.Fatalf("патч паузы 0 отвергнут: %v", err)
+	}
+	h = a.config.DNSProxy.Health
+	if h.Timeout != 3*time.Second || h.RestoreGap != 0 {
+		t.Fatalf("конверсия секунд: %+v", h)
+	}
+
+	// диапазоны: всё вне - ErrDnsUpstreamsInvalid и модель не тронута
+	bad := []models.AppConfigDNSProxyHealthPatch{
+		{IntervalSec: ptrU(4)}, {IntervalSec: ptrU(301)},
+		{TimeoutSec: ptrU(0)}, {TimeoutSec: ptrU(11)},
+		{FailCycles: ptrU(0)}, {FailCycles: ptrU(21)},
+		{RestoreCycles: ptrU(0)}, {RestoreCycles: ptrU(21)},
+		{RestoreGapSec: ptrU(3601)},
+	}
+	before := a.config.DNSProxy.Health
+	for i := range bad {
+		if err := a.SetDnsUpstreams(nil, &bad[i]); !errors.Is(err, app.ErrDnsUpstreamsInvalid) {
+			t.Fatalf("патч %+v должен отвергаться, got %v", bad[i], err)
+		}
+	}
+	if a.config.DNSProxy.Health != before {
+		t.Fatalf("после отказов модель не должна меняться")
+	}
+
+	// addrs + health вместе: меняется и список, и политика
+	if err := a.SetDnsUpstreams([]string{"9.9.9.9"}, &models.AppConfigDNSProxyHealthPatch{IntervalSec: ptrU(60)}); err != nil {
+		t.Fatalf("список+патч отвергнут: %v", err)
+	}
+	if len(a.config.DNSProxy.UpstreamList()) != 1 || a.config.DNSProxy.UpstreamList()[0].Address != "9.9.9.9" {
+		t.Fatalf("список не заменён: %+v", a.config.DNSProxy.UpstreamList())
+	}
+	if a.config.DNSProxy.Health.Interval != time.Minute {
+		t.Fatalf("интервал из комбинированной записи: %+v", a.config.DNSProxy.Health)
+	}
+}
+
+func ptrU(v uint) *uint { return &v }

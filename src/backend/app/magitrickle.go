@@ -50,7 +50,9 @@ type Main interface {
 	// SetDnsUpstreams - замена списка апстримов (host:port, порядок =
 	// приоритет) с персистентной записью и горячей подменой живому
 	// dns-proxy; ErrDnsUpstreamsInvalid - кривой/пустой список.
-	SetDnsUpstreams(addrs []string) error
+	// С rev14: addrs == nil - список не трогать (запись только health);
+	// health - необязательный патч политики зондов (nil-поля = не трогать).
+	SetDnsUpstreams(addrs []string, health *models.AppConfigDNSProxyHealthPatch) error
 	// DnsZonesSnapshot - состояние таблицы зон dns-proxy (API rev13);
 	// ok=false, если dns-proxy ещё не построен (до Start).
 	DnsZonesSnapshot() (snap []dnsMITMProxy.ZoneSnapshot, ok bool)

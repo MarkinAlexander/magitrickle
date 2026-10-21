@@ -70,6 +70,19 @@ type AppConfigDNSProxyHealth struct {
 	RestoreGap    time.Duration
 }
 
+// AppConfigDNSProxyHealthPatch - частичная правка политики зондов
+// (API rev14, управление нагрузкой проб из панели mawg): nil-поля =
+// «не трогать»; длительности приходят секундами (uint) и конвертируются
+// при применении. Диапазоны валидирует API-слой.
+type AppConfigDNSProxyHealthPatch struct {
+	Enabled       *bool
+	IntervalSec   *uint
+	TimeoutSec    *uint
+	FailCycles    *uint
+	RestoreCycles *uint
+	RestoreGapSec *uint
+}
+
 // UpstreamList - эффективный список апстримов: непустой Upstreams
 // вытесняет одиночный Upstream (обратная совместимость, 43-док §5).
 func (c AppConfigDNSProxy) UpstreamList() []AppConfigDNSProxyServer {

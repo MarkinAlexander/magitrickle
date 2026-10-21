@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"magitrickle/app"
 	"magitrickle/models"
@@ -77,13 +78,27 @@ func (a *App) DnsUpstreamsSnapshot() (dnsMITMProxy.UpstreamsSnapshot, bool) {
 // подмена живому менеджеру без рестарта демона (та же механика, что у
 // SIGHUP). Одиночный legacy Upstream не трогается - остаётся фолбэком,
 // если список когда-нибудь уберут.
-func (a *App) SetDnsUpstreams(addrs []string) error {
-	ups, err := parseUpstreamAddrs(addrs)
-	if err != nil {
-		return err
+//
+// С rev14 вторым аргументом - необязательный патч политики зондов:
+// addrs == nil означает «список не трогать» (запись только health),
+// nil-поля патча - «поле не трогать».
+func (a *App) SetDnsUpstreams(addrs []string, health *models.AppConfigDNSProxyHealthPatch) error {
+	var ups []models.AppConfigDNSProxyServer
+	if addrs != nil {
+		var err error
+		ups, err = parseUpstreamAddrs(addrs)
+		if err != nil {
+			return err
+		}
+	}
+	if err := validateHealthPatch(health); err != nil {
+		return fmt.Errorf("%w: %v", app.ErrDnsUpstreamsInvalid, err)
 	}
 	a.stateMu.Lock()
-	a.config.DNSProxy.Upstreams = ups
+	if ups != nil {
+		a.config.DNSProxy.Upstreams = ups
+	}
+	applyHealthPatch(&a.config.DNSProxy.Health, health)
 	a.stateMu.Unlock()
 	if err := a.SaveConfig(); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
@@ -94,5 +109,55 @@ func (a *App) SetDnsUpstreams(addrs []string) error {
 	log.Info().
 		Strs("upstreams", dnsUpstreamAddrs(a.config.DNSProxy)).
 		Msg("dns upstreams updated via api")
+	return nil
+}
+
+// applyHealthPatch - непустые поля патча (rev14) в модель политики
+// зондов: длительности приходят секундами.
+func applyHealthPatch(dst *models.AppConfigDNSProxyHealth, h *models.AppConfigDNSProxyHealthPatch) {
+	if h == nil {
+		return
+	}
+	if h.Enabled != nil {
+		dst.Enabled = *h.Enabled
+	}
+	if h.IntervalSec != nil {
+		dst.Interval = time.Duration(*h.IntervalSec) * time.Second
+	}
+	if h.TimeoutSec != nil {
+		dst.Timeout = time.Duration(*h.TimeoutSec) * time.Second
+	}
+	if h.FailCycles != nil {
+		dst.FailCycles = *h.FailCycles
+	}
+	if h.RestoreCycles != nil {
+		dst.RestoreCycles = *h.RestoreCycles
+	}
+	if h.RestoreGapSec != nil {
+		dst.RestoreGap = time.Duration(*h.RestoreGapSec) * time.Second
+	}
+}
+
+// validateHealthPatch - диапазоны полей health (rev14): те же, что
+// валидирует панель mawg; 0 там валиден только у restoreGapSec.
+func validateHealthPatch(h *models.AppConfigDNSProxyHealthPatch) error {
+	if h == nil {
+		return nil
+	}
+	if h.IntervalSec != nil && (*h.IntervalSec < 5 || *h.IntervalSec > 300) {
+		return fmt.Errorf("intervalSec %d вне диапазона 5-300", *h.IntervalSec)
+	}
+	if h.TimeoutSec != nil && (*h.TimeoutSec < 1 || *h.TimeoutSec > 10) {
+		return fmt.Errorf("timeoutSec %d вне диапазона 1-10", *h.TimeoutSec)
+	}
+	if h.FailCycles != nil && (*h.FailCycles < 1 || *h.FailCycles > 20) {
+		return fmt.Errorf("failCycles %d вне диапазона 1-20", *h.FailCycles)
+	}
+	if h.RestoreCycles != nil && (*h.RestoreCycles < 1 || *h.RestoreCycles > 20) {
+		return fmt.Errorf("restoreCycles %d вне диапазона 1-20", *h.RestoreCycles)
+	}
+	if h.RestoreGapSec != nil && *h.RestoreGapSec > 3600 {
+		return fmt.Errorf("restoreGapSec %d вне диапазона 0-3600", *h.RestoreGapSec)
+	}
 	return nil
 }

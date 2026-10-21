@@ -645,7 +645,7 @@ func (h *Handler) GetDnsUpstreams(w http.ResponseWriter, r *http.Request) {
 // PutDnsUpstreams
 //
 //	@Summary		Замена списка апстримов dns-proxy
-//	@Description	Порядок = приоритет; plain host:port (порт по умолчанию 53), DoT tls://host[:853], DoH https://host[:443][/dns-query]; сохраняет конфиг и горячо подменяет список без рестарта демона
+//	@Description	Порядок = приоритет; plain host:port (порт по умолчанию 53), DoT tls://host[:853], DoH https://host[:443][/dns-query]; сохраняет конфиг и горячо подменяет список без рестарта демона. С rev14: upstreams отсутствует = не трогать (запись только health - политики зондов: nil-поля = не трогать, длительности в секундах)
 //	@Tags			dns
 //	@Accept			json
 //	@Produce		json
@@ -660,7 +660,18 @@ func (h *Handler) PutDnsUpstreams(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.app.SetDnsUpstreams(req.Upstreams); err != nil {
+	var health *models.AppConfigDNSProxyHealthPatch
+	if req.Health != nil {
+		health = &models.AppConfigDNSProxyHealthPatch{
+			Enabled:       req.Health.Enabled,
+			IntervalSec:   req.Health.IntervalSec,
+			TimeoutSec:    req.Health.TimeoutSec,
+			FailCycles:    req.Health.FailCycles,
+			RestoreCycles: req.Health.RestoreCycles,
+			RestoreGapSec: req.Health.RestoreGapSec,
+		}
+	}
+	if err := h.app.SetDnsUpstreams(req.Upstreams, health); err != nil {
 		if errors.Is(err, app.ErrDnsUpstreamsInvalid) {
 			utils.WriteError(w, http.StatusBadRequest, err.Error())
 		} else {

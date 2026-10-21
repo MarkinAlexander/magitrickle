@@ -215,3 +215,99 @@ func mustDecode(t *testing.T, r io.Reader, v interface{}) {
 		t.Fatalf("JSON decode error: %v", err)
 	}
 }
+
+// rev14: PUT /dns/upstreams с health - частичный патч доезжает до модели
+// (проверяем через Config(): холодный App отдаёт пустой снапшот);
+// невалидные диапазоны = 400; upstreams отсутствует = список не трогать
+func TestDnsUpstreamsPutHealth(t *testing.T) {
+	core := magitrickle.New()
+	errChan := make(chan error, 1)
+	rootRouter := chi.NewRouter()
+	rootRouter.Use(middleware.Recoverer)
+	rootRouter.Mount("/api/v1", v1.NewRouter(core))
+	srv, err := setupHTTP(core, rootRouter, errChan)
+	if err != nil {
+		t.Fatalf("setupHTTP error: %v", err)
+	}
+	baseURL := fmt.Sprintf("http://%s/api/v1", srv.Addr)
+	var once sync.Once
+	shutdown := func() {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+		})
+	}
+	defer shutdown()
+	go func() {
+		if e := <-errChan; e != nil {
+			shutdown()
+		}
+	}()
+
+	url := baseURL + "/dns/upstreams"
+	nBefore := len(core.Config().DNSProxy.UpstreamList())
+	if nBefore == 0 {
+		t.Fatalf("дефолтный список апстримов пуст")
+	}
+
+	// health-only запись (без upstreams): частичный патч
+	payload := `{"health":{"enabled":false,"intervalSec":30,"restoreGapSec":60}}`
+	resp, body := doRequest(t, http.MethodPut, url, []byte(payload))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(body)
+		t.Fatalf("PUT health-only => %d: %s", resp.StatusCode, string(b))
+	}
+	cfg := core.Config().DNSProxy
+	if cfg.Health.Enabled || cfg.Health.Interval != 30*time.Second || cfg.Health.RestoreGap != time.Minute {
+		t.Fatalf("health-патч не применился: %+v", cfg.Health)
+	}
+	if cfg.Health.Timeout != 2*time.Second || cfg.Health.FailCycles != 3 || cfg.Health.RestoreCycles != 2 {
+		t.Fatalf("nil-поля патча трогать нельзя: %+v", cfg.Health)
+	}
+	if got := len(cfg.UpstreamList()); got != nBefore {
+		t.Fatalf("health-only запись тронула список: %d -> %d", nBefore, got)
+	}
+
+	// upstreams + health вместе
+	payload = `{"upstreams":["8.8.8.8","tls://1.1.1.1"],"health":{"intervalSec":60,"failCycles":5,"restoreCycles":4,"timeoutSec":3}}`
+	resp, body = doRequest(t, http.MethodPut, url, []byte(payload))
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(body)
+		t.Fatalf("PUT список+health => %d: %s", resp.StatusCode, string(b))
+	}
+	resp.Body.Close()
+	cfg = core.Config().DNSProxy
+	list := cfg.UpstreamList()
+	if len(list) != 2 || list[0].Address != "8.8.8.8" || list[0].Port != 53 || list[1].Address != "tls://1.1.1.1:853" {
+		t.Fatalf("список не заменился: %+v", list)
+	}
+	if cfg.Health.Interval != time.Minute || cfg.Health.FailCycles != 5 || cfg.Health.RestoreCycles != 4 || cfg.Health.Timeout != 3*time.Second {
+		t.Fatalf("полный health-патч: %+v", cfg.Health)
+	}
+
+	// невалидные диапазоны -> 400
+	for _, bad := range []string{
+		`{"health":{"intervalSec":4}}`,
+		`{"health":{"intervalSec":301}}`,
+		`{"health":{"timeoutSec":0}}`,
+		`{"health":{"timeoutSec":11}}`,
+		`{"health":{"failCycles":0}}`,
+		`{"health":{"restoreCycles":21}}`,
+		`{"health":{"restoreGapSec":3601}}`,
+	} {
+		resp, body = doRequest(t, http.MethodPut, url, []byte(bad))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PUT %s => %d, хочу 400", bad, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// кривой адрес в списке -> 400 (старый контракт сохранён)
+	resp, body = doRequest(t, http.MethodPut, url, []byte(`{"upstreams":[]}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PUT пустой список => %d, хочу 400", resp.StatusCode)
+	}
+}

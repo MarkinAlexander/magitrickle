@@ -134,6 +134,45 @@ func TestCanaryMarkingKM(t *testing.T) {
 	waitFor([]string{alive, first}, "после M успехов")
 }
 
+// stagger (rev14): разнос стартов проб не меняет вердиктов - K-маркировка
+// работает и с паузами; отмена контекста посреди разгона не вешает probeAll
+func TestStaggerKeepsKMMarking(t *testing.T) {
+	spoof := "6.6.6.6"
+	clean := "204.8.99.144"
+	a := spoof
+	alive := fakeUpstreamUDP(t, &a)
+	first := fakeUpstreamUDP(t, &clean)
+	third := fakeUpstreamUDP(t, &clean)
+	h := UpstreamHealth{Enabled: true, Interval: 10 * time.Millisecond, Timeout: 500 * time.Millisecond, FailCycles: 2, RestoreCycles: 2, RestoreGap: 0}
+	m := newUpstreamManager([]string{alive, first, third}, 2, h)
+	m.stagger = 200 * time.Millisecond
+	defer m.close()
+
+	// отмена до первой паузы: probeAll завершается, не дождавшись всех
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() { m.probeAll(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probeAll не завершился после отмены контекста")
+	}
+
+	// рабочий воркер с разносом: отравленный уходит вниз после K=2
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	m.start(ctx2)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := strings.Join(candidateAddrs(m), ","); got == strings.Join([]string{first, third, alive}, ",") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("K-маркировка со stagger: кандидаты = %v", candidateAddrs(m))
+}
+
 // restoreGap: чистые пробы есть, но возврат наверх не чаще раза в R
 func TestRestoreGapBlocksFlap(t *testing.T) {
 	spoof := "6.6.6.6"

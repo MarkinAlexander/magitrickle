@@ -36,9 +36,26 @@ type DnsUpstreamState struct {
 
 // DnsUpstreamsPutReq - замена списка апстримов (редактор каскада mawg):
 // адреса "8.8.8.8" или "8.8.8.8:5353" (порт по умолчанию 53), порядок =
-// приоритет; список непустой обязателен.
+// приоритет. Поле Upstreams опционально с rev14: отсутствует (nil) =
+// список не трогать (запись только health). Старым клиентам без поля
+// health всё совместимо: неизвестный JSON игнорируется.
 type DnsUpstreamsPutReq struct {
-	Upstreams []string `json:"upstreams"`
+	Upstreams []string         `json:"upstreams"`
+	Health    *DnsHealthPutReq `json:"health,omitempty"`
+}
+
+// DnsHealthPutReq - правка политики зондов апстримов (rev14: управление
+// нагрузкой проб из панели): nil-поля = «не трогать», длительности в
+// секундах. Каждое поле влияет и на скорость реакции, и на всплески
+// нагрузки - интервал/таймаут проверяют серверы, циклы/пауза - гистерезис
+// переключений.
+type DnsHealthPutReq struct {
+	Enabled       *bool `json:"enabled" example:"true"`
+	IntervalSec   *uint `json:"intervalSec" example:"10"`
+	TimeoutSec    *uint `json:"timeoutSec" example:"2"`
+	FailCycles    *uint `json:"failCycles" example:"3"`
+	RestoreCycles *uint `json:"restoreCycles" example:"2"`
+	RestoreGapSec *uint `json:"restoreGapSec" example:"300"`
 }
 
 // DnsZonesRes - состояние зонного DNS (API rev13): таблица зон со стейтом
