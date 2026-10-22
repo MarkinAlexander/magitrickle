@@ -37,40 +37,56 @@ func newConnPoolDial(network, addr string, maxIdle uint, dial func(ctx context.C
 }
 
 func (p *connPool) Get(ctx context.Context) (net.Conn, error) {
+	return p.get(ctx, true)
+}
+
+func (p *connPool) get(ctx context.Context, reuse bool) (net.Conn, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return nil, errors.New("pool is closed")
 	}
-	p.mu.Unlock()
-
 	// Check context before trying to get/create connection
 	if ctx.Err() != nil {
+		p.mu.Unlock()
 		return nil, ctx.Err()
 	}
 
-	select {
-	case conn := <-p.pool:
-		return conn, nil
-	default:
-		return p.dial(ctx)
+	if reuse {
+		select {
+		case conn := <-p.pool:
+			p.mu.Unlock()
+			return conn, nil
+		default:
+		}
 	}
+	p.mu.Unlock()
+	conn, err := p.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		_ = conn.Close()
+		return nil, errors.New("pool is closed")
+	}
+	return conn, nil
 }
 
 func (p *connPool) Put(conn net.Conn) {
 	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		_ = conn.Close()
-		return
+	if !p.closed {
+		select {
+		case p.pool <- conn:
+			p.mu.Unlock()
+			return
+		default:
+		}
 	}
 	p.mu.Unlock()
-
-	select {
-	case p.pool <- conn:
-	default:
-		_ = conn.Close()
-	}
+	_ = conn.Close()
 }
 
 func (p *connPool) Close() {
@@ -80,9 +96,9 @@ func (p *connPool) Close() {
 		return
 	}
 	p.closed = true
+	close(p.pool)
 	p.mu.Unlock()
 
-	close(p.pool)
 	for conn := range p.pool {
 		_ = conn.Close()
 	}

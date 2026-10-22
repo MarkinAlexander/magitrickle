@@ -184,12 +184,12 @@ func (p *DNSMITMProxy) exchangeUpstream(ctx context.Context, u *upstream, req []
 	if u.kind == upDoH {
 		return dohExchange(ctx, u, req, p.timeout)
 	}
+	if u.kind == upDoT {
+		return dotExchangeOnce(ctx, u, req, p.timeout)
+	}
 	var pool *connPool
 	tcpFraming := network == "tcp"
-	if u.kind == upDoT {
-		pool = u.dot
-		tcpFraming = true // DNS-over-TLS = TCP-фрейминг внутри TLS
-	} else if network == "tcp" {
+	if network == "tcp" {
 		pool = u.tcp
 	} else {
 		pool = u.udp

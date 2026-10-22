@@ -43,11 +43,11 @@ type UpstreamHealth struct {
 }
 
 type upstream struct {
-	addr string
-	kind upKind
-	tcp  *connPool // plain: TCP
-	udp  *connPool // plain: UDP
-	dot  *connPool // DoT: TCP + TLS (кастомный диал)
+	addr        string
+	kind        upKind
+	tcp         *connPool // plain: TCP
+	udp         *connPool // plain: UDP
+	dot         *connPool // DoT: TCP + TLS (кастомный диал)
 	dotDialAddr string
 	dotTLS      *tls.Config
 	doh         *http.Client // DoH: keep-alive внутри транспорта
@@ -197,11 +197,7 @@ type upstreamManager struct {
 	// liveness A-запросом самого имени зоны (любой валидный ответ = жив);
 	// пустой = общий каскад с канарейкой-контент-чеком.
 	probeName string
-	// stagger - пауза между стартами проб соседних апстримов (rev14):
-	// залп «все параллельно» даёт всплеск CPU высотой в сумму проб
-	// (каждое шифрованное зондирование - свежее TLS-рукопожатие), разнос
-	// пиков снижает нагрузку без изменения вердиктов.
-	stagger time.Duration
+	stagger   time.Duration
 
 	workerMu     sync.Mutex
 	parent       context.Context
@@ -471,8 +467,6 @@ func (m *upstreamManager) markTransportError(u *upstream) {
 	m.mark(u, false, "transport error")
 }
 
-// canaryProbe - A-запрос канарейки напрямую в апстрим (мимо пулов, своё
-// соединение со своим таймаутом); true = в ответе есть канонический адрес.
 // DoT/DoH зондируются своим транспортом - канал клиента и канал зонда
 // должны совпадать, иначе канарейка не видит подмену на пути.
 func canaryProbe(ctx context.Context, u *upstream, timeout time.Duration) (bool, string) {

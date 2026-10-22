@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -141,23 +142,47 @@ func dohExchange(ctx context.Context, u *upstream, req []byte, timeout time.Dura
 	return io.ReadAll(io.LimitReader(resp.Body, dns.MaxMsgSize))
 }
 
-// dotExchangeOnce - один DoT-обмен во временноЕ TLS-соединение (для
-// зонда-канарейки, мимо пула - как udp-зонд plain-апстримов); диал через
-// бутстрап-резолв, если адрес - имя (SNI в conf остаётся именем).
 func dotExchangeOnce(ctx context.Context, u *upstream, req []byte, timeout time.Duration) ([]byte, error) {
-	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	raw, err := dialUpstreamHost(dialCtx, u.bs, "tcp", u.dotDialAddr)
-	if err != nil {
+	var q dns.Msg
+	if err := q.Unpack(req); err != nil {
 		return nil, err
 	}
-	defer func() { _ = raw.Close() }()
-	conn := tls.Client(raw, u.dotTLS.Clone())
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if err := conn.HandshakeContext(dialCtx); err != nil {
-		return nil, err
+	deadline, _ := ctx.Deadline()
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		conn, getErr := u.dot.get(ctx, attempt == 0)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		var resp []byte
+		resp, err = dnsFramedExchange(conn, req)
+		if err != nil {
+			_ = conn.Close()
+			var netErr net.Error
+			if !errors.As(err, &netErr) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, err
+			}
+			continue
+		}
+		var msg dns.Msg
+		if err := msg.Unpack(resp); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		if msg.Id != q.Id {
+			_ = conn.Close()
+			return nil, errAnswerMismatch
+		}
+		u.dot.Put(conn)
+		return resp, nil
 	}
-	return dnsFramedExchange(conn, req)
+	return nil, err
 }
 
 // dnsFramedExchange - DNS-over-TCP фрейминг (2-байтовый префикс длины).
