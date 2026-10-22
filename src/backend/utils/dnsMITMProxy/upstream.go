@@ -197,7 +197,11 @@ type upstreamManager struct {
 	// liveness A-запросом самого имени зоны (любой валидный ответ = жив);
 	// пустой = общий каскад с канарейкой-контент-чеком.
 	probeName string
-	stagger   time.Duration
+	// stagger - пауза между стартами проб соседних апстримов (rev14):
+	// залп «все параллельно» даёт всплеск CPU высотой в сумму проб
+	// (каждое шифрованное зондирование - свежее TLS-рукопожатие), разнос
+	// пиков снижает нагрузку без изменения вердиктов.
+	stagger time.Duration
 
 	workerMu     sync.Mutex
 	parent       context.Context
