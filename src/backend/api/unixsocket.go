@@ -29,6 +29,9 @@ func SetupUnixSocket(a app.Main, errChan chan error) (*http.Server, error) {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Mount("/api/v1", v1.NewRouter(a))
+	// Профилирование (pprof) - ТОЛЬКО на unix-сокете: сокет недоступен
+	// по сети, HTTP-экспозиции нет. Диагностика волн CPU (96-док).
+	r.Mount("/debug", middleware.Profiler())
 
 	srv := &http.Server{
 		Handler: r,
