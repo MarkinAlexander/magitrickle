@@ -2,6 +2,8 @@ package models
 
 import (
 	"testing"
+
+	"github.com/dlclark/regexp2"
 )
 
 func TestRule_IsMatch_Domain(t *testing.T) {
@@ -228,5 +230,88 @@ func BenchmarkRule_IsMatch_RegEx_NoCompile(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		rule.IsMatch("sub.example.com")
+	}
+}
+
+// compileRegexMatcher: RE2 первым (линейное время), regexp2 - фолбэк для
+// .NET-специфики; семантика IgnoreCase сохраняется (волны CPU, 96-док).
+func TestCompileRegexRE2First(t *testing.T) {
+	m, err := compileRegexMatcher(`^.*---sn-[a-z0-9-]{2,10}\.googlevideo\.com$`)
+	if err != nil {
+		t.Fatalf("RE2-совместимый паттерн не скомпилировался: %v", err)
+	}
+	if !m("v1---sn-ojhgnc-5q.googlevideo.com") {
+		t.Fatal("RE2-матчер не сработал на совпадении")
+	}
+	if m("example.com") {
+		t.Fatal("RE2-матчер сработал на несовпадении")
+	}
+}
+
+func TestCompileRegexFallbackRegexp2(t *testing.T) {
+	// lookbehind RE2 не берёт - должен уйти в regexp2 без ошибки
+	m, err := compileRegexMatcher(`(?<=^x)abc`)
+	if err != nil {
+		t.Fatalf("фолбэк regexp2 не сработал: %v", err)
+	}
+	if !m("xabc") {
+		t.Fatal("regexp2-матчер не сработал")
+	}
+}
+
+func TestCompileRegexInvalidBothEngines(t *testing.T) {
+	if _, err := compileRegexMatcher(`*[`); err == nil {
+		t.Fatal("битый паттерн должен давать ошибку")
+	}
+}
+
+func TestRegexRuleIgnoreCaseParity(t *testing.T) {
+	rule := &Rule{Type: RuleTypeRegEx, Rule: `^.*\.GOOGLEVideo\.COM$`}
+	if err := rule.Compile(); err != nil {
+		t.Fatal(err)
+	}
+	if !rule.IsMatch("sub.googLEvideo.Com") {
+		t.Fatal("IgnoreCase потерян")
+	}
+	if rule.IsMatch("sub.example.com") {
+		t.Fatal("ложное совпадение")
+	}
+}
+
+// Паритет вердиктов RE2 против regexp2 на правилах реального конфига
+// (общее подмножество синтаксиса должно матчиться одинаково).
+func TestRegexRuleRE2ParityWithRegexp2(t *testing.T) {
+	patterns := []string{
+		`.*---sn-ojhgnc-5q\.googlevideo\.com$`,
+		`^(www|maps)\.(yandex|google)\.[a-z]{2,}$`,
+		`^[a-z0-9-]+\.cdn-video\.example\.com`,
+		`(\.youtube\.com$)|(\.ytimg\.com$)`,
+		`^r[0-9]{1,3}---sn-.*\.googlevideo\.com$`,
+	}
+	names := []string{
+		"v1---sn-ojhgnc-5q.googlevideo.com",
+		"r2---sn-abcd.googlevideo.com",
+		"www.yandex.ru",
+		"maps.google.com",
+		"foo.cdn-video.example.com",
+		"bar.youtube.com",
+		"i.ytimg.com",
+		"example.org",
+	}
+	for _, p := range patterns {
+		m, err := compileRegexMatcher(p)
+		if err != nil {
+			t.Fatalf("%q: %v", p, err)
+		}
+		ref, refErr := regexp2.Compile(p, regexp2.IgnoreCase)
+		if refErr != nil {
+			t.Fatalf("%q: regexp2 отказался: %v", p, refErr)
+		}
+		for _, n := range names {
+			want, _ := ref.MatchString(n)
+			if got := m(n); got != want {
+				t.Fatalf("%q на %q: RE2=%v regexp2=%v", p, n, got, want)
+			}
+		}
 	}
 }

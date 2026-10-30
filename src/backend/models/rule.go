@@ -1,6 +1,7 @@
 package models
 
 import (
+	"regexp"
 	"sync"
 
 	"magitrickle/utils/intID"
@@ -42,20 +43,36 @@ func (d *Rule) Compile() error {
 
 		switch d.Type {
 		case RuleTypeRegEx:
-			re, err := regexp2.Compile(d.Rule, regexp2.IgnoreCase)
+			matcher, err := compileRegexMatcher(d.Rule)
 			if err != nil {
 				d.compileErr = err
-				d.compiled = func(string) bool { return false }
-				return
 			}
-			d.compiled = func(s string) bool {
-				ok, _ := re.MatchString(s)
-				return ok
-			}
+			d.compiled = matcher
 		}
 	})
 	d.compileWait.Wait()
 	return d.compileErr
+}
+
+// compileRegexMatcher строит матчер regex-правила. Первым пробуется
+// stdlib RE2 (линейное время, без бэктрекинга; для DNS-матчинга это
+// порядок быстрее - волны CPU на mipsle давал именно regexp2, профиль
+// 96-док). IgnoreCase из regexp2 переводится в (?i). Паттерны с
+// .NET-спецификой (lookaround, backreferences), которые RE2 не берёт,
+// падают на regexp2 как раньше. Семантика на общем подмножестве
+// синтаксиса совпадает (имена доменов без переводов строк).
+func compileRegexMatcher(pattern string) (func(string) bool, error) {
+	if re, err := regexp.Compile("(?i)" + pattern); err == nil {
+		return re.MatchString, nil
+	}
+	re, err := regexp2.Compile(pattern, regexp2.IgnoreCase)
+	if err != nil {
+		return func(string) bool { return false }, err
+	}
+	return func(s string) bool {
+		ok, _ := re.MatchString(s)
+		return ok
+	}, nil
 }
 
 func (d *Rule) IsMatch(domainName string) bool {
