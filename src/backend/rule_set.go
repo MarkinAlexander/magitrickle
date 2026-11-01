@@ -21,6 +21,11 @@ import (
 type RuleSet struct {
 	spec rulesets.Spec
 
+	// specFingerprint - отпечаток spec на момент сборки (specFingerprint
+	// в subscriptions.go): база инкрементальной пересборки подписок,
+	// чтобы не трогать хуки неизменивших групп.
+	specFingerprintStr string
+
 	enabled atomic.Bool
 	locker  sync.Mutex
 
@@ -28,6 +33,10 @@ type RuleSet struct {
 	ipset       *netfilterTools.IPSet
 	srcIPSet    *netfilterTools.IPSet
 	ipsetToLink *netfilterTools.IPSetToLink
+}
+
+func (g *RuleSet) specFingerprint() string {
+	return g.specFingerprintStr
 }
 
 // parseSourceSubnets разбирает элемент списка источников группы: одиночный
@@ -73,8 +82,9 @@ func (g *RuleSet) Enabled() bool {
 
 func newRuleSet(spec rulesets.Spec, app *App) (*RuleSet, error) {
 	return &RuleSet{
-		spec: spec,
-		app:  app,
+		spec:               spec,
+		specFingerprintStr: specFingerprint(spec),
+		app:                app,
 	}, nil
 }
 

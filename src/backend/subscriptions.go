@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"magitrickle/app"
 	"magitrickle/models"
+	"magitrickle/rulesets"
 	"magitrickle/subscriptions"
 	"magitrickle/utils/intID"
 
@@ -26,21 +28,105 @@ func (a *App) SyncSubscriptionRuleSets() error {
 	return a.syncSubscriptionRuleSetsLocked()
 }
 
+// specFingerprint - дешёвый отпечаток содержимого спецификации (значения,
+// не указатели: Model у specs пересоздаётся, у живых RuleSet может быть
+// алиасом на модель конфига). Нужен для инкрементальной пересборки:
+// неизменившие группы сохраняют хуки, пересобираются только
+// новые/изменившиеся/удалённые.
+func specFingerprint(spec rulesets.Spec) string {
+	var b strings.Builder
+	b.WriteString(spec.RuntimeKey)
+	b.WriteByte('|')
+	b.WriteString(spec.Interface)
+	b.WriteByte('|')
+	if spec.Enable {
+		b.WriteString("on")
+	}
+	b.WriteByte('|')
+	for _, s := range spec.Sources {
+		b.WriteString(s)
+		b.WriteByte(',')
+	}
+	b.WriteByte('|')
+	for _, r := range spec.Rules {
+		if r == nil {
+			continue
+		}
+		if r.Enable {
+			b.WriteString("+")
+		} else {
+			b.WriteString("-")
+		}
+		b.WriteString(r.Type)
+		b.WriteByte(':')
+		b.WriteString(r.Rule)
+		b.WriteByte(',')
+	}
+	return b.String()
+}
+
+// syncSubscriptionRuleSetsLocked инкрементально пересобирает подписочные
+// группы. Прежняя логика (disable ВСЕХ -> пересборка по одной; одна
+// ошибка -> откат, после которого все подписочные группы оставались без
+// хуков) выкидывала iptables-цепочки всех групп при каждом обновлении
+// контента любой подписки: минуты "телеграм/интернет отвалился" на каждый
+// чих подписок (инцидент Кинетика 01.11). Теперь живые группы с
+// неизменившимся отпечатком не трогаются вовсе.
 func (a *App) syncSubscriptionRuleSetsLocked() error {
 	var errs []error
 
-	for _, ruleSet := range a.subscriptionRuleSets {
-		if err := ruleSet.Disable(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to disable subscription rule set %s: %w", ruleSet.IDValue().String(), err))
-		}
+	specs := subscriptions.BuildRuntimeRuleSets(a.subscriptions)
+	desired := make(map[string]rulesets.Spec, len(specs))
+	order := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		key := spec.RuntimeKey
+		desired[key] = spec
+		order = append(order, key)
 	}
-	a.subscriptionRuleSets = nil
 
-	runtimeRuleSets, err := a.buildSubscriptionRuleSetsLocked()
-	if err != nil {
-		return errors.Join(append(errs, err)...)
+	kept := make([]*RuleSet, 0, len(desired))
+	keptKeys := make(map[string]bool, len(desired))
+	for _, ruleSet := range a.subscriptionRuleSets {
+		key := ruleSet.RuntimeKey()
+		desiredSpec, ok := desired[key]
+		if !ok || ruleSet.specFingerprint() != specFingerprint(desiredSpec) {
+			// удалена или изменилась - полная пересборка этой группы
+			if err := ruleSet.Disable(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to disable subscription rule set %s: %w", ruleSet.IDValue().String(), err))
+			}
+			continue
+		}
+		kept = append(kept, ruleSet)
+		keptKeys[key] = true
 	}
-	a.subscriptionRuleSets = runtimeRuleSets
+
+	// порядок сохраняем как у specs (приоритет конфига)
+	for _, key := range order {
+		if keptKeys[key] {
+			continue
+		}
+		spec := desired[key]
+		ruleSet, err := newRuleSet(spec, a)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to create subscription rule set %s: %w", spec.ID.String(), err))
+			continue
+		}
+		if !a.enabled.Load() {
+			kept = append(kept, ruleSet)
+			continue
+		}
+		if err := ruleSet.Enable(); err != nil {
+			_ = ruleSet.Disable()
+			errs = append(errs, fmt.Errorf("failed to enable subscription rule set %s: %w", ruleSet.IDValue().String(), err))
+			continue
+		}
+		if err := ruleSet.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to sync subscription rule set %s: %w", ruleSet.IDValue().String(), err))
+			continue
+		}
+		kept = append(kept, ruleSet)
+	}
+	a.subscriptionRuleSets = kept
 
 	return errors.Join(errs...)
 }

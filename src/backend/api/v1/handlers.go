@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"magitrickle/api/utils"
 	"magitrickle/api/v1/types"
@@ -55,7 +56,18 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 		Msg("received netfilter.d event")
 	err = h.app.ForceCommitIPTables()
 	if err != nil {
-		log.Error().Err(err).Msg("error fixing iptables after netfilter.d")
+		log.Error().Err(err).Msg("error fixing iptables after netfilter.d, retrying once")
+		// ndm шлёт событие сразу после своей пересборки фаервола - лок
+		// xtables может быть ещё занят. Раньше ошибка глоталась и
+		// стёртые прыжки групп жили до случайного следующего коммита
+		// (Кинетик 01.11: группы "работали -> отвалились"). Один
+		// отсроченный ретрай закрывает типовой отказ.
+		go func() {
+			time.Sleep(3 * time.Second)
+			if err := h.app.ForceCommitIPTables(); err != nil {
+				log.Error().Err(err).Msg("netfilter.d retry failed; reconcile loop will repair")
+			}
+		}()
 	}
 }
 

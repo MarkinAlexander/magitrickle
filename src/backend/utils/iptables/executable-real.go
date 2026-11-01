@@ -36,7 +36,11 @@ func (ipt *realIPTables) Proto() Protocol {
 }
 
 func (ipt *realIPTables) Save() ([]byte, error) {
-	cmd := exec.Command(ipt.saveCmd)
+	// -w 5: ждать xtables-lock до 5с. Без него iptables-save падает при
+	// локе, удерживаемом ndm (пересборка фаервола Кинетика), и дифф-коммит
+	// теряется целиком (Kinetic, инцидент 01.11: хуки групп исчезали
+	// волнами именно на этих отказах).
+	cmd := exec.Command(ipt.saveCmd, "-w", "5")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -53,7 +57,9 @@ func (ipt *realIPTables) Save() ([]byte, error) {
 }
 
 func (ipt *realIPTables) Restore(data []byte) error {
-	cmd := exec.Command(ipt.restoreCmd, "--noflush")
+	// -w 5: см. Save - рестор без ожидания лока терял коммит при
+	// одновременной активности ndm.
+	cmd := exec.Command(ipt.restoreCmd, "--noflush", "-w", "5")
 
 	var stderr bytes.Buffer
 	cmd.Stdin = bytes.NewReader(data)

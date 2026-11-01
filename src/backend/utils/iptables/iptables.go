@@ -251,7 +251,19 @@ func (ipt *IPTables) Commit() (err error) {
 		return false
 	}
 	ruleDropped := 0
-	for tableName, table := range ipt.rules {
+	// Детерминированный порядок таблиц в потоке рестора: iptables-restore
+	// применяет таблицы последовательно и падает на первой ошибке, поэтому
+	// случайный порядок map давал недетерминированное частичное состояние
+	// ("какие хуки выжили" менялось от попытки к попытке). Сортировка
+	// даёт стабильный порядок (filter < mangle < nat) и воспроизводимые
+	// отказы.
+	tableNames := make([]string, 0, len(ipt.rules))
+	for tableName := range ipt.rules {
+		tableNames = append(tableNames, tableName)
+	}
+	slices.Sort(tableNames)
+	for _, tableName := range tableNames {
+		table := ipt.rules[tableName]
 		curTable := curRules[tableName]
 
 		var tableExists bool

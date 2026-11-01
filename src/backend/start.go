@@ -18,6 +18,8 @@ import (
 	"magitrickle/utils/netfilterTools"
 	"magitrickle/utils/recordsCache"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/rs/zerolog"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -195,13 +197,26 @@ func (a *App) Start(ctx context.Context) (err error) {
 		}()
 	}
 
+	// Стартовый Enable групп: отказ одной группы ранее валил весь процесс
+	// (return -> выход -> init-рестарт -> CleanIPTables стирал все хуки и
+	// всё начиналось заново; на Кинетике ndm при загрузке ещё и стирает
+	// прыжки под ногами). Теперь провал группы логируется и группа будет
+	// достроена reconcile-тиком.
+	var bootErrs []error
 	for _, group := range a.ruleSetSnapshot() {
 		if err := group.Enable(); err != nil {
-			return fmt.Errorf("failed to enable group: %w", err)
+			log.Error().Err(err).Str("group", group.DisplayName()).Msg("failed to enable group at start, reconcile will retry")
+			bootErrs = append(bootErrs, err)
+			continue
 		}
 		if err := group.Sync(); err != nil {
-			return fmt.Errorf("failed to sync group: %w", err)
+			log.Error().Err(err).Str("group", group.DisplayName()).Msg("failed to sync group at start")
+			bootErrs = append(bootErrs, err)
+			continue
 		}
+	}
+	if len(bootErrs) > 0 {
+		log.Warn().Int("failed_groups", len(bootErrs)).Msg("some groups failed at start; reconcile loop will repair them")
 	}
 	defer func() {
 		for _, group := range a.ruleSetSnapshot() {
@@ -211,6 +226,13 @@ func (a *App) Start(ctx context.Context) (err error) {
 
 	go a.StartSubscriptionAutoUpdate(newCtx)
 
+	// reconcile-тик: верификация живых хуков всех включённых групп +
+	// дифф-коммит модели (см. reconcile.go). Единственный до этого
+	// механизм - netfilter.d - терял события и падал на локах, из-за чего
+	// группы "работали -> отваливались" без смены конфигурации.
+	reconcileTicker := time.NewTicker(reconcileInterval)
+	defer reconcileTicker.Stop()
+
 	for {
 		select {
 		case event := <-linkUpdateChannel:
@@ -219,6 +241,8 @@ func (a *App) Start(ctx context.Context) (err error) {
 			a.handleAddr(event)
 		case err := <-errChan:
 			return err
+		case <-reconcileTicker.C:
+			a.reconcileOnce()
 		case <-ctx.Done():
 			return nil
 		}
