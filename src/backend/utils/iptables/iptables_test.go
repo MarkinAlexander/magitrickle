@@ -724,3 +724,21 @@ func TestChainPatchInsertClampedInStream(t *testing.T) {
 		t.Fatalf("-I должен быть зажат к 3 (живых правил 2): %q", insertLine)
 	}
 }
+
+// invalidOption - обе формулировки сборок без -w: iptables legacy
+// ("invalid option") и busybox/другие ("unrecognized option") - живые
+// случаи: Кинетик и OpenWrt 24.10 (инцидент rev18 на 0.62).
+func TestInvalidOptionPhrases(t *testing.T) {
+	cases := map[string]bool{
+		"iptables-save: invalid option -- 'w'":          true,
+		"iptables-save: unrecognized option: w":          true,
+		"Look at manual page `iptables-save.8'":         false,
+		"iptables-restore: line 70 failed":               false,
+		"":                                               false,
+	}
+	for stderr, want := range cases {
+		if got := invalidOption(stderr); got != want {
+			t.Fatalf("invalidOption(%q) = %v, ждём %v", stderr, got, want)
+		}
+	}
+}

@@ -17,14 +17,18 @@ type realIPTables struct {
 	restoreCmd string
 	proto      Protocol
 
-	// waitMu/waitChecked/waitOK: поддержка -w (ожидание xtables-lock)
-	// определяется один раз пробным запуском. Сборки без -w (Кинетик:
-	// "iptables-restore: invalid option -- 'w'") навсегда уходят на
-	// вызовы без флага; на поддерживающих -w рестор дожидается лока,
+	// waitMu + флаги: поддержка -w (ожидание xtables-lock) определяется
+	// один раз пробными запусками, ОТДЕЛЬНО для save и restore - сборки
+	// бывают несимметричны (OpenWrt 24.10: restore -w понимает, save -
+	// нет; живой случай 03.11: MT падал на старте). Сборки без -w
+	// (Кинетик: "iptables-save: invalid option -- 'w'") навсегда уходят
+	// на вызовы без флага; на поддерживающих -w вызов дожидается лока
 	// вместо потери коммита при занятом ndm-локе (инцидент 01.11).
-	waitMu      sync.Mutex
-	waitChecked bool
-	waitOK      bool
+	waitMu          sync.Mutex
+	waitSaveOK      bool
+	waitSaveChecked bool
+	waitRestoreOK   bool
+	waitRestoreOKCk bool
 }
 
 func NewRealIPTables() *realIPTables {
@@ -47,37 +51,69 @@ func (ipt *realIPTables) Proto() Protocol {
 	return ipt.proto
 }
 
-// waitSupported возвращает true, если данная сборка iptables понимает -w.
-// Проба - реальный вызов restore с пустым потоком (no-op): на сборках без
-// -w он отвечает "invalid option -- 'w'" и флаг отключается навсегда.
-func (ipt *realIPTables) waitSupported() bool {
+// waitSupportedSave/waitSupportedRestore - пробы -w по каждой команде
+// отдельно: проба - реальный вызов (save без аргументов / restore с
+// пустым no-op потоком). На сборках без -w ответ "invalid option" или
+// "unrecognized option" - формулировки зависят от варианта iptables
+// (Кинетик vs OpenWrt busybox) - и флаг отключается навсегда.
+func (ipt *realIPTables) waitSupportedSave() bool {
 	ipt.waitMu.Lock()
 	defer ipt.waitMu.Unlock()
-	if ipt.waitChecked {
-		return ipt.waitOK
+	if ipt.waitSaveChecked {
+		return ipt.waitSaveOK
+	}
+	var stderr bytes.Buffer
+	probe := exec.Command(ipt.saveCmd, "-w", "5")
+	probe.Stdout = &bytes.Buffer{}
+	probe.Stderr = &stderr
+	err := probe.Run()
+	ipt.waitSaveOK = !(err != nil && invalidOption(stderr.String()))
+	ipt.waitSaveChecked = true
+	if !ipt.waitSaveOK {
+		log.Warn().Str("cmd", ipt.saveCmd).Msg("xtables -w not supported for save, lock-wait disabled")
+	}
+	return ipt.waitSaveOK
+}
+
+func (ipt *realIPTables) waitSupportedRestore() bool {
+	ipt.waitMu.Lock()
+	defer ipt.waitMu.Unlock()
+	if ipt.waitRestoreOKCk {
+		return ipt.waitRestoreOK
 	}
 	probe := exec.Command(ipt.restoreCmd, "--noflush", "-w", "5")
 	probe.Stdin = bytes.NewReader(nil)
 	var stderr bytes.Buffer
 	probe.Stderr = &stderr
 	err := probe.Run()
-	ipt.waitOK = !(err != nil && invalidOption(stderr.String()))
-	ipt.waitChecked = true
-	if !ipt.waitOK {
-		log.Warn().Str("cmd", ipt.restoreCmd).Msg("xtables -w not supported, lock-wait disabled")
+	ipt.waitRestoreOK = !(err != nil && invalidOption(stderr.String()))
+	ipt.waitRestoreOKCk = true
+	if !ipt.waitRestoreOK {
+		log.Warn().Str("cmd", ipt.restoreCmd).Msg("xtables -w not supported for restore, lock-wait disabled")
 	}
-	return ipt.waitOK
+	return ipt.waitRestoreOK
 }
 
-func (ipt *realIPTables) disableWait() {
+func (ipt *realIPTables) disableWaitSave() {
 	ipt.waitMu.Lock()
-	ipt.waitOK = false
-	ipt.waitChecked = true
+	ipt.waitSaveOK = false
+	ipt.waitSaveChecked = true
 	ipt.waitMu.Unlock()
 }
 
+func (ipt *realIPTables) disableWaitRestore() {
+	ipt.waitMu.Lock()
+	ipt.waitRestoreOK = false
+	ipt.waitRestoreOKCk = true
+	ipt.waitMu.Unlock()
+}
+
+// invalidOption - сборка не знает флаг -w; варианты формулировок:
+// iptables legacy "invalid option -- 'w'", busybox/другие варианты
+// "unrecognized option: w" (живые случаи: Кинетик и OpenWrt 24.10)
 func invalidOption(stderr string) bool {
-	return strings.Contains(stderr, "invalid option")
+	return strings.Contains(stderr, "invalid option") ||
+		strings.Contains(stderr, "unrecognized option")
 }
 
 func (ipt *realIPTables) save(useWait bool) ([]byte, string, error) {
@@ -102,7 +138,7 @@ func (ipt *realIPTables) save(useWait bool) ([]byte, string, error) {
 }
 
 func (ipt *realIPTables) Save() ([]byte, error) {
-	if ipt.waitSupported() {
+	if ipt.waitSupportedSave() {
 		out, stderr, err := ipt.save(true)
 		if err == nil {
 			return out, nil
@@ -111,7 +147,7 @@ func (ipt *realIPTables) Save() ([]byte, error) {
 			return nil, err
 		}
 		// сборка без -w (проба не успела) - откат и запоминание
-		ipt.disableWait()
+		ipt.disableWaitSave()
 	}
 	out, _, err := ipt.save(false)
 	return out, err
@@ -140,7 +176,7 @@ func (ipt *realIPTables) restore(data []byte, useWait bool) (string, error) {
 }
 
 func (ipt *realIPTables) Restore(data []byte) error {
-	if ipt.waitSupported() {
+	if ipt.waitSupportedRestore() {
 		stderr, err := ipt.restore(data, true)
 		if err == nil {
 			return nil
@@ -148,7 +184,7 @@ func (ipt *realIPTables) Restore(data []byte) error {
 		if !invalidOption(stderr) {
 			return err
 		}
-		ipt.disableWait()
+		ipt.disableWaitRestore()
 	}
 	_, err := ipt.restore(data, false)
 	return err
