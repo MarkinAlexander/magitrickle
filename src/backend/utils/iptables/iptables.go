@@ -30,6 +30,13 @@ type IPTables struct {
 	sync       sync.RWMutex
 }
 
+// tableRange - границы потока одной таблицы в буфере коммита
+// (для потабличного фолбэка при отказе рестора)
+type tableRange struct {
+	name  []byte
+	start int
+}
+
 func NewIPTables(executable Executable) *IPTables {
 	return &IPTables{
 		rules:      make(map[string]map[string]chain),
@@ -262,6 +269,8 @@ func (ipt *IPTables) Commit() (err error) {
 		tableNames = append(tableNames, tableName)
 	}
 	slices.Sort(tableNames)
+	// границы таблиц в буфере - для потабличного фолбэка при отказе рестора
+	tableStarts := make([]tableRange, 0, len(tableNames))
 	for _, tableName := range tableNames {
 		table := ipt.rules[tableName]
 		curTable := curRules[tableName]
@@ -285,6 +294,7 @@ func (ipt *IPTables) Commit() (err error) {
 			}
 			if len(commands) > 0 {
 				if !tableExists {
+					tableStarts = append(tableStarts, tableRange{name: tableNameBytes, start: buf.Len()})
 					buf.WriteByte('*')
 					buf.Write(tableNameBytes)
 					buf.WriteByte('\n')
@@ -365,5 +375,35 @@ func (ipt *IPTables) Commit() (err error) {
 		log.Warn().Int("count", ruleDropped).Msg("dropped cross-family ipset rules")
 	}
 
-	return ipt.executable.Restore(buf.Bytes())
+	data := buf.Bytes()
+	if err := ipt.executable.Restore(data); err != nil {
+		// Потабличный фолбэк (Кинетик 03.11, инцидент геоблока): отказ
+		// общего потока раньше хоронил ВСЕ таблицы - poisoned-хвост в одной
+		// из них валил коммит каждого ретрая (reconcile бьётся каждые 30с
+		// об одно и то же) до рестарта процесса. Теперь таблицы
+		// пересылаются по одной: яд в mangle не мешает filter/nat, а
+		// упавший поток целиком уходит в лог для диагностики. Таблицы,
+		// применившиеся в общем потоке, могут дать дубликаты правил -
+		// следующая Commit их снимает (точные -D / -F у override).
+		log.Error().Err(err).Int("bytes", len(data)).Msg("iptables commit failed, retrying table-by-table")
+		starts := make([]int, 0, len(tableStarts)+1)
+		for _, tr := range tableStarts {
+			starts = append(starts, tr.start)
+		}
+		starts = append(starts, len(data))
+		var errs []error
+		for i, tr := range tableStarts {
+			table := data[starts[i]:starts[i+1]]
+			if err := ipt.executable.Restore(table); err != nil {
+				log.Error().Err(err).Str("table", string(tr.name)).Bytes("stream", table).
+					Msg("iptables commit: table stream failed")
+				errs = append(errs, fmt.Errorf("table %s: %w", tr.name, err))
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+	}
+
+	return nil
 }

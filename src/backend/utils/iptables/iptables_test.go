@@ -3,7 +3,10 @@
 package iptables
 
 import (
+	"bytes"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -595,5 +598,129 @@ func TestRestoreErrorContext(t *testing.T) {
 	}
 	if got := restoreErrorContext("line 99 failed", []byte(stream)); got != "" {
 		t.Fatalf("line beyond stream: want empty, got %q", got)
+	}
+}
+
+// recordingFake пишет вызовы Restore - для проверки потабличного фолбэка
+type recordingFake struct {
+	*FakeIPTables
+	calls [][]byte
+	// failMultiTable: отказ на общем потоке из 2+ таблиц, успех потаблично
+	failMultiTable bool
+	// failAll: отказ всегда (тест честной ошибки)
+	failAll bool
+}
+
+func (r *recordingFake) Restore(data []byte) error {
+	r.calls = append(r.calls, append([]byte(nil), data...))
+	if r.failAll {
+		return errRestoreBoom
+	}
+	if r.failMultiTable && countCommits(data) > 1 {
+		return errRestoreBoom
+	}
+	return r.FakeIPTables.Restore(data)
+}
+
+func countCommits(data []byte) int {
+	return bytes.Count(data, []byte("COMMIT"))
+}
+
+var errRestoreBoom = errors.New("restore boom: line 70 failed (COMMIT)")
+
+// Потабличный фолбэк (инцидент геоблока 03.11): отказ общего потока двух
+// таблиц раньше валил всё - теперь таблицы досылаются по одной, хвост
+// failed-стрима уходит в ошибку с именем таблицы.
+func TestCommitPerTableFallback(t *testing.T) {
+	rec := &recordingFake{FakeIPTables: NewFakeIPTables(ProtocolIPv4), failMultiTable: true}
+	ipt := NewIPTables(rec)
+
+	if err := ipt.RegisterChainOverride("filter", "MT_a2069f35"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ipt.Append("filter", "MT_a2069f35", "-m", "set", "--match-set", "mt_a2069f35_4", "dst", "-j", "ACCEPT"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ipt.RegisterChainOverride("nat", "MT_d0bb14fb"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ipt.Append("nat", "MT_d0bb14fb", "-m", "set", "--match-set", "mt_d0bb14fb_4", "dst", "-j", "MASQUERADE"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ipt.Commit(); err != nil {
+		t.Fatalf("фолбэк должен спасать таблицы по одной: %v", err)
+	}
+	// вызов 1 - общий поток (отказ), 2 и 3 - filter и nat по отдельности
+	if len(rec.calls) != 3 {
+		t.Fatalf("restore вызовов: %d, ждём 3 (общий + 2 таблицы)", len(rec.calls))
+	}
+	if countCommits(rec.calls[0]) != 2 {
+		t.Fatalf("первый вызов должен нести обе таблицы: %q", rec.calls[0])
+	}
+	if !rec.ChainExists("filter", "MT_a2069f35") {
+		t.Fatal("filter не доехал в фолбэке")
+	}
+	if !rec.ChainExists("nat", "MT_d0bb14fb") {
+		t.Fatal("nat не доехал в фолбэке")
+	}
+	// следующая Commit чистая (дифф пустой) - ошибок не рождает
+	if err := ipt.Commit(); err != nil {
+		t.Fatalf("повторный коммит должен проходить: %v", err)
+	}
+}
+
+// Честная ошибка: если таблица не проходит даже потаблично - Commit
+// возвращает ошибку с именем таблицы (а не молча теряет).
+func TestCommitFallbackReportsFailedTable(t *testing.T) {
+	rec := &recordingFake{FakeIPTables: NewFakeIPTables(ProtocolIPv4), failAll: true}
+	ipt := NewIPTables(rec)
+	if err := ipt.RegisterChainOverride("filter", "MT_x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ipt.Append("filter", "MT_x", "-j", "ACCEPT"); err != nil {
+		t.Fatal(err)
+	}
+	err := ipt.Commit()
+	if err == nil {
+		t.Fatal("упорный отказ должен возвращать ошибку")
+	}
+	if !strings.Contains(err.Error(), "table filter") {
+		t.Fatalf("ошибка должна называть таблицу: %v", err)
+	}
+}
+
+// Кламп -I: живой restore (1.4.21) отвергает номер за пределами цепочки -
+// в потоке должен оказаться зажатый номер, а не исходный.
+func TestChainPatchInsertClampedInStream(t *testing.T) {
+	rec := &recordingFake{FakeIPTables: NewFakeIPTables(ProtocolIPv4)}
+	rec.SetInitialRules("nat", "PREROUTING", [][]string{
+		{"-j", "NDM_A"}, {"-j", "NDM_B"},
+	})
+	ipt := NewIPTables(rec)
+	if err := ipt.RegisterChainPatch("nat", "PREROUTING"); err != nil {
+		t.Fatal(err)
+	}
+	// номер 100 при живых двух правилах: реальный restore ответил бы
+	// "line number out of range" и унёс COMMIT
+	if err := ipt.Insert("nat", "PREROUTING", 100, "-j", "MT_DNSOR"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ipt.Commit(); err != nil {
+		t.Fatalf("клёмпнутый -I должен проходить: %v", err)
+	}
+	var insertLine []byte
+	for _, call := range rec.calls {
+		for _, line := range bytes.Split(call, []byte("\n")) {
+			if bytes.HasPrefix(line, []byte("-I PREROUTING")) {
+				insertLine = line
+			}
+		}
+	}
+	if insertLine == nil {
+		t.Fatal("-I не ушёл в поток")
+	}
+	if !bytes.Contains(insertLine, []byte("-I PREROUTING 3 ")) {
+		t.Fatalf("-I должен быть зажат к 3 (живых правил 2): %q", insertLine)
 	}
 }

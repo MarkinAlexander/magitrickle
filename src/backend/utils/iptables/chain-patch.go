@@ -69,7 +69,18 @@ func (c *chainPatch) Compile(chainName []byte, existedRules []Rule) ([]command, 
 			if count > 0 {
 				continue
 			}
-			out = append(out, command{Option: optionInsert, RuleNum: r.RuleNum, Chain: chainName, Rule: r.Rule})
+			// живой iptables-restore (Кинетик: 1.4.21) отвергает -I с
+			// номером за пределами цепочки, фейковый - клампит: выравниваем
+			// поток по реальному рестору, иначе ndm, срезавший правила
+			// builtin-цепочки, оставляет навсегда отказоносный -I
+			num := r.RuleNum
+			if max := len(existedRules) + 1; num > max {
+				num = max
+			}
+			if num < 1 {
+				num = 1
+			}
+			out = append(out, command{Option: optionInsert, RuleNum: num, Chain: chainName, Rule: r.Rule})
 		case optionDelete:
 			if count == 0 {
 				continue
