@@ -68,8 +68,13 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 		Str("network", network).
 		Msg("request received")
 
+	// Поток DNS-запросов - только в debug: на info-уровне журнал на
+	// роутерах писался на флешку непрерывно (каждый запрос LAN,
+	// ~300КБ/час на живом Кинетике, слово владельца 2026-11-05). Для
+	// диагностики отдельного случая уровень поднимается конфигом
+	// (logLevel: debug) - трасса полная.
 	for _, q := range reqMsg.Question {
-		log.Info().
+		log.Debug().
 			Str("id", idStr).
 			Str("name", q.Name).
 			Int("qtype", int(q.Qtype)).
@@ -211,7 +216,7 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 						Msg("added subnet")
 				}
 
-				log.Info().
+				log.Debug().
 					Str("name", domainName).
 					Str("address", addrStr).
 					Str("group", group.DisplayName()).
@@ -282,7 +287,7 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 						Msg("added subnet")
 				}
 
-				log.Info().
+				log.Debug().
 					Str("name", domainName).
 					Str("address", addrStr).
 					Str("group", group.DisplayName()).
@@ -326,7 +331,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 					continue
 				}
 
-				log.Info().
+				log.Debug().
 					Str("name", domainName).
 					Str("cname", targetName).
 					Str("group", group.DisplayName()).
