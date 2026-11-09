@@ -776,3 +776,56 @@ func (h *Handler) PutDnsZones(w http.ResponseWriter, r *http.Request) {
 	}
 	h.GetDnsZones(w, r)
 }
+//	@Router			/api/v1/dns/hosts [get]
+func (h *Handler) GetDnsHosts(w http.ResponseWriter, r *http.Request) {
+	pairs, ok := h.app.DnsHostsSnapshot()
+	if !ok {
+		utils.WriteJson(w, http.StatusOK, types.DnsHostsRes{
+			Available: false,
+			Hosts:     []types.DnsHostRes{},
+		})
+		return
+	}
+	res := types.DnsHostsRes{
+		Available: true,
+		Hosts:     make([]types.DnsHostRes, 0, len(pairs)),
+	}
+	for _, hp := range pairs {
+		res.Hosts = append(res.Hosts, types.DnsHostRes{Name: hp.Name, Address: hp.Address})
+	}
+	utils.WriteJson(w, http.StatusOK, res)
+}
+
+// PutDnsHosts
+//
+//	@Summary		Замена таблицы статических hosts dns-proxy
+//	@Description	Имя и адрес (IPv4/IPv6), одно имя может иметь обе семьи; сохраняет конфиг и горячо подменяет таблицу без рестарта демона; пустой список = очистка
+//	@Tags			dns
+//	@Accept			json
+//	@Produce		json
+//	@Param			json	body	types.DnsHostsPutReq	true	"Новая таблица hosts"
+//	@Success		200	{object}	types.DnsHostsRes
+//	@Failure		400	{object}	types.ErrorRes
+//	@Failure		500	{object}	types.ErrorRes
+//	@Router			/api/v1/dns/hosts [put]
+func (h *Handler) PutDnsHosts(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[types.DnsHostsPutReq](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	hosts := make([]models.AppConfigDNSProxyHost, 0, len(req.Hosts))
+	for _, hp := range req.Hosts {
+		hosts = append(hosts, models.AppConfigDNSProxyHost{Name: hp.Name, Address: hp.Address})
+	}
+	if err := h.app.SetDnsHosts(hosts); err != nil {
+		if errors.Is(err, app.ErrDnsHostsInvalid) {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+		} else {
+			log.Error().Err(err).Msg("failed to set dns hosts")
+			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	h.GetDnsHosts(w, r)
+}

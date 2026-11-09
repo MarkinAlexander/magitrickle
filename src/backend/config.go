@@ -37,6 +37,19 @@ func upstreamsToFile(ups []models.AppConfigDNSProxyServer) *[]config.DNSProxySer
 // zonesToFile - таблица зон для файла конфига; nil остаётся nil (ключ не
 // появляется), пустой список - сознательная очистка зон (записывается
 // как пустой ключ).
+// hostsToFile - таблица статических hosts в файл конфига; пусто = ключа нет.
+func hostsToFile(hosts []models.AppConfigDNSProxyHost) *[]config.DnsProxyHost {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make([]config.DnsProxyHost, 0, len(hosts))
+	for _, h := range hosts {
+		name, addr := h.Name, h.Address
+		out = append(out, config.DnsProxyHost{Name: &name, Address: &addr})
+	}
+	return &out
+}
+
 func zonesToFile(zones []models.AppConfigDNSProxyZone) *[]config.DNSProxyZone {
 	if zones == nil {
 		return nil
@@ -93,6 +106,16 @@ func (a *App) LoadConfig() error {
 			if cfg.App.DNSProxy.Upstream != nil {
 				applyIfSet(&a.config.DNSProxy.Upstream.Address, cfg.App.DNSProxy.Upstream.Address)
 				applyIfSet(&a.config.DNSProxy.Upstream.Port, cfg.App.DNSProxy.Upstream.Port)
+			}
+			if cfg.App.DNSProxy.Hosts != nil {
+				hosts := make([]models.AppConfigDNSProxyHost, 0, len(*cfg.App.DNSProxy.Hosts))
+				for _, h := range *cfg.App.DNSProxy.Hosts {
+					hm := models.AppConfigDNSProxyHost{}
+					applyIfSet(&hm.Name, h.Name)
+					applyIfSet(&hm.Address, h.Address)
+					hosts = append(hosts, hm)
+				}
+				a.config.DNSProxy.Hosts = hosts
 			}
 			if cfg.App.DNSProxy.Upstreams != nil {
 				ups := make([]models.AppConfigDNSProxyServer, 0, len(*cfg.App.DNSProxy.Upstreams))
@@ -275,6 +298,7 @@ func (a *App) SaveConfig() error {
 				},
 				Upstreams: upstreamsToFile(a.config.DNSProxy.Upstreams),
 				Zones:     zonesToFile(a.config.DNSProxy.Zones),
+				Hosts:     hostsToFile(a.config.DNSProxy.Hosts),
 				Health: &config.DNSProxyHealth{
 					Enabled:       &a.config.DNSProxy.Health.Enabled,
 					Interval:      &a.config.DNSProxy.Health.Interval,

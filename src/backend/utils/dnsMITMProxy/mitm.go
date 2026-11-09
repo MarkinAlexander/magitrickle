@@ -31,6 +31,10 @@ type DNSMITMProxy struct {
 	// апстримами, longest-suffix матч имени запроса.
 	zonesMu sync.RWMutex
 	zones   []zoneEntry
+	// hosts - таблица статических записей (rev21): имя -> адреса;
+	// запрос имени отвечает сам прокси, мимо апстримов и response-hook.
+	hostsMu sync.RWMutex
+	hosts   map[string][]net.IP
 	// healthCtx - контекст зондов (StartHealthWorker); зонные менеджеры,
 	// построенные позже, стартуют свои воркеры на нём же.
 	healthCtx context.Context
@@ -274,7 +278,7 @@ func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req 
 	}
 
 	var reqMsg dns.Msg
-	if p.RequestHook != nil || p.ResponseHook != nil || p.zonesCount() > 0 {
+	if p.RequestHook != nil || p.ResponseHook != nil || p.zonesCount() > 0 || p.hostsCount() > 0 {
 		err := reqMsg.Unpack(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse request: %w", err)
@@ -305,6 +309,12 @@ func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req 
 	// Check context before making upstream request
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+
+	// статические hosts (rev21): имя из таблицы отвечает сам прокси -
+	// мимо апстримов и response-hook (AAAA-фильтр на пины не действует)
+	if respMsg := p.staticHostsResponse(&reqMsg); respMsg != nil {
+		return respMsg.Pack()
 	}
 
 	resp, err := p.upstreamResponse(ctx, &reqMsg, req, network)

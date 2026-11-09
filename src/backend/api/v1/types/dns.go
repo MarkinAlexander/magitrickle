@@ -89,3 +89,30 @@ type DnsZonePut struct {
 type DnsZonesPutReq struct {
 	Zones []DnsZonePut `json:"zones"`
 }
+
+// DnsHostsRes - таблица статических hosts (API rev21): имена, на которые
+// dns-proxy отвечает сам, мимо апстримов (пины владельца, /etc/hosts,
+// ip host - наполняет контроллер mawg).
+type DnsHostsRes struct {
+	// Available=false - dns-proxy ещё не построен (демон до Start).
+	Available bool          `json:"available"`
+	Hosts     []DnsHostRes  `json:"hosts"`
+}
+
+// DnsHostRes - одна статическая запись.
+type DnsHostRes struct {
+	Name    string `json:"name" example:"ntc.party"`
+	Address string `json:"address" example:"130.255.77.28"`
+}
+
+// DnsHostPut - запись редактора hosts (rev21): имя и адрес
+// (IPv4 или IPv6); одно имя может иметь обе семьи (две записи).
+type DnsHostPut struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+}
+
+// DnsHostsPutReq - замена всей таблицы (PUT); пустой список = очистка.
+type DnsHostsPutReq struct {
+	Hosts []DnsHostPut `json:"hosts"`
+}

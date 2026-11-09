@@ -32,6 +32,7 @@ type AppConfigDNSProxy struct {
 	Upstream        AppConfigDNSProxyServer
 	Upstreams       []AppConfigDNSProxyServer
 	Zones           []AppConfigDNSProxyZone
+	Hosts           []AppConfigDNSProxyHost
 	Health          AppConfigDNSProxyHealth
 	DisableRemap53  bool
 	DisableFakePTR  bool
@@ -39,6 +40,14 @@ type AppConfigDNSProxy struct {
 	MaxIdleConns    uint
 	MaxConcurrent   uint
 	Timeout         time.Duration
+}
+
+// AppConfigDNSProxyHost - статическая запись hosts (rev21): имя
+// (lowercase, без хвостовой точки) и адрес (IPv4 или IPv6).
+// Запрос этого имени отвечает сам dns-proxy, мимо апстримов.
+type AppConfigDNSProxyHost struct {
+	Name    string
+	Address string
 }
 
 // AppConfigDNSProxyZone - зонный DNS (rev13): зона (lowercase, без

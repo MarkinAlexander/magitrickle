@@ -48,6 +48,15 @@ func dnsUpstreamAddrs(c models.AppConfigDNSProxy) []string {
 	return addrList(c.UpstreamList())
 }
 
+// dnsHostPairs - статические hosts из модели конфига (rev21).
+func dnsHostPairs(c models.AppConfigDNSProxy) []dnsMITMProxy.HostPair {
+	out := make([]dnsMITMProxy.HostPair, 0, len(c.Hosts))
+	for _, h := range c.Hosts {
+		out = append(out, dnsMITMProxy.HostPair{Name: h.Name, Address: h.Address})
+	}
+	return out
+}
+
 // dnsZoneRoutes - таблица зон для прокси (rev13): модель конфига ->
 // маршруты зон с адресами их апстримов.
 func dnsZoneRoutes(c models.AppConfigDNSProxy) []dnsMITMProxy.ZoneRoute {
@@ -106,6 +115,8 @@ func (a *App) Start(ctx context.Context) (err error) {
 	// стартовая таблица зон - до StartHealthWorker (воркеры зонных
 	// менеджеров возьмут контекст оттуда)
 	a.dnsMITM.UpdateZones(dnsZoneRoutes(a.config.DNSProxy), dnsHealthConfig(a.config.DNSProxy.Health))
+	// стартовая таблица статических hosts (rev21) - до StartHealthWorker
+	a.dnsMITM.UpdateHosts(dnsHostPairs(a.config.DNSProxy))
 	a.dnsMITM.RequestHook = a.dnsRequestHook
 	a.dnsMITM.ResponseHook = a.dnsResponseHook
 	defer func() {

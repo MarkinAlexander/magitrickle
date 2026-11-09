@@ -24,6 +24,8 @@ func NewRouter(a app.Main) chi.Router {
 		r.Put("/upstreams", h.PutDnsUpstreams)
 		r.Get("/zones", h.GetDnsZones)
 		r.Put("/zones", h.PutDnsZones)
+		r.Get("/hosts", h.GetDnsHosts)
+		r.Put("/hosts", h.PutDnsHosts)
 	})
 	r.Route("/groups", func(r chi.Router) {
 		r.Get("/", h.GetGroups)

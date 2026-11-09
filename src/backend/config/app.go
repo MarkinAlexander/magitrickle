@@ -29,6 +29,7 @@ type HTTPWebServer struct {
 
 type DNSProxy struct {
 	Host     *DNSProxyServer   `yaml:"host"`
+	Hosts    *[]DnsProxyHost   `yaml:"hosts"`
 	Upstream *DNSProxyServer   `yaml:"upstream"`
 	// Upstreams - упорядоченный список апстримов (приоритет = порядок,
 	// 43-док §5); непустой список вытесняет одиночный Upstream.
@@ -45,6 +46,13 @@ type DNSProxy struct {
 	MaxIdleConns    *uint           `yaml:"maxIdleConns"`
 	MaxConcurrent   *uint           `yaml:"maxConcurrent"`
 	Timeout         *time.Duration  `yaml:"timeout"`
+}
+
+// DnsProxyHost - статическая запись hosts (rev21): имя и адрес
+// (IPv4 или IPv6); запрос имени отвечает сам dns-proxy.
+type DnsProxyHost struct {
+	Name    *string `yaml:"name"`
+	Address *string `yaml:"address"`
 }
 
 // DNSProxyZone - запись зонного DNS (rev13): имя зоны (без хвостовой
