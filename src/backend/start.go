@@ -283,26 +283,9 @@ func (a *App) ForceCommitIPTables() error {
 }
 
 func (a *App) setupLogging() {
-	switch a.config.LogLevel {
-	case "trace":
-		zerolog.SetGlobalLevel(zerolog.TraceLevel)
-	case "debug":
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	case "info":
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	case "warn":
-		zerolog.SetGlobalLevel(zerolog.WarnLevel)
-	case "error":
-		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
-	case "fatal":
-		zerolog.SetGlobalLevel(zerolog.FatalLevel)
-	case "panic":
-		zerolog.SetGlobalLevel(zerolog.PanicLevel)
-	case "nolevel":
-		zerolog.SetGlobalLevel(zerolog.NoLevel)
-	case "disabled":
-		zerolog.SetGlobalLevel(zerolog.Disabled)
-	default:
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	level, ok := zerologLevelByName(a.config.LogLevel)
+	if !ok {
+		level = zerolog.InfoLevel
 	}
+	zerolog.SetGlobalLevel(level)
 }

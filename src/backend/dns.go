@@ -133,7 +133,11 @@ func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) {
 	}
 
 	if msg.Rcode != dns.RcodeSuccess {
-		log.Warn().
+		// NXDOMAIN/SERVFAIL/REFUSED - норма трафика (реклама, мёртвые
+		// домены, PTR): ответ клиенту доставлен, маршрутизировать нечего.
+		// Раньше Warn - забивал syslog пользователей (кейс 11.2026:
+		// ~8/мин, у пользователей весь лог из этих записей).
+		log.Debug().
 			Str("id", idStr).
 			Str("clientAddr", clientAddrStr).
 			Str("network", network).

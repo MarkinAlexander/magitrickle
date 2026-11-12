@@ -21,6 +21,7 @@ var (
 	ErrDnsUpstreamsInvalid  = errors.New("dns upstreams invalid")
 	ErrDnsZonesInvalid      = errors.New("dns zones invalid")
 	ErrDnsHostsInvalid      = errors.New("dns hosts invalid")
+	ErrLogLevelInvalid      = errors.New("log level invalid")
 )
 
 type SubscriptionSyncResult struct {
@@ -67,6 +68,12 @@ type Main interface {
 	// записью и горячей подменой живому dns-proxy; ErrDnsZonesInvalid -
 	// кривая зона/пустой список её апстримов. Пустой список = очистка.
 	SetDnsZones(zones []models.AppConfigDNSProxyZone) error
+	// SetLogLevel - смена уровня лога на лету (API rev22): глобальный
+	// уровень zerolog + запись в конфиг (переживает рестарт);
+	// ErrLogLevelInvalid - неизвестное имя уровня.
+	SetLogLevel(level string) error
+	// LogLevelSnapshot - текущий уровень лога (API rev22).
+	LogLevelSnapshot() string
 	LoadConfig() error
 	SaveConfig() error
 	ForceCommitIPTables() error

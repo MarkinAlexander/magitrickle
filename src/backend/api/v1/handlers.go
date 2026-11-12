@@ -829,3 +829,45 @@ func (h *Handler) PutDnsHosts(w http.ResponseWriter, r *http.Request) {
 	}
 	h.GetDnsHosts(w, r)
 }
+
+// GetLogLevel
+//
+//	@Summary		Текущий уровень лога демона
+//	@Description	Читается контроллером mawg для карточки «Бэкенд MT»
+//	@Tags			app
+//	@Produce		json
+//	@Success		200	{object}	types.LogLevelRes
+//	@Router			/api/v1/app/loglevel [get]
+func (h *Handler) GetLogLevel(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, types.LogLevelRes{Level: h.app.LogLevelSnapshot()})
+}
+
+// PutLogLevel
+//
+//	@Summary		Смена уровня лога на лету
+//	@Description	Глобальный уровень zerolog + запись в конфиг (переживает рестарт); кноб «Уровень лога MT» в панели mawg
+//	@Tags			app
+//	@Accept			json
+//	@Produce		json
+//	@Param			json	body	types.LogLevelPutReq	true	"Новый уровень"
+//	@Success		200	{object}	types.LogLevelRes
+//	@Failure		400	{object}	types.ErrorRes
+//	@Failure		500	{object}	types.ErrorRes
+//	@Router			/api/v1/app/loglevel [put]
+func (h *Handler) PutLogLevel(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[types.LogLevelPutReq](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.app.SetLogLevel(req.Level); err != nil {
+		if errors.Is(err, app.ErrLogLevelInvalid) {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+		} else {
+			log.Error().Err(err).Msg("failed to set log level")
+			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	h.GetLogLevel(w, r)
+}

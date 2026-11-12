@@ -19,6 +19,10 @@ func NewRouter(a app.Main) chi.Router {
 	r.Get("/auth", auth.StatusHandler(a))
 	r.Post("/auth", auth.LoginHandler(a))
 	r.Get("/version", h.GetVersion)
+	r.Route("/app", func(r chi.Router) {
+		r.Get("/loglevel", h.GetLogLevel)
+		r.Put("/loglevel", h.PutLogLevel)
+	})
 	r.Route("/dns", func(r chi.Router) {
 		r.Get("/upstreams", h.GetDnsUpstreams)
 		r.Put("/upstreams", h.PutDnsUpstreams)
