@@ -250,6 +250,15 @@ func (g *RuleSet) SourceModels() []string {
 	return g.spec.Sources
 }
 
+// localOnly - модель группы просит не обрабатывать трафик самого роутера
+// (OUTPUT-прыжок не ставится); у подписочных наборов без модели - false
+func (g *RuleSet) localOnly() bool {
+	if g.spec.Model != nil {
+		return g.spec.Model.LocalOnly
+	}
+	return false
+}
+
 func (g *RuleSet) enable() error {
 	if !g.enabled.CompareAndSwap(false, true) {
 		return nil
@@ -268,7 +277,7 @@ func (g *RuleSet) enable() error {
 		srcIPSet = g.app.nfHelper.IPSet(g.RuntimeKey() + "_src")
 	}
 	ipset := g.app.nfHelper.IPSet(g.RuntimeKey())
-	ipsetToLink := g.app.nfHelper.IPSetToLink(g.RuntimeKey(), g.RouteInterface(), ipset, srcIPSet)
+	ipsetToLink := g.app.nfHelper.IPSetToLink(g.RuntimeKey(), g.RouteInterface(), ipset, srcIPSet, g.localOnly())
 	if err := ipsetToLink.ClearIfDisabled(); err != nil {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}

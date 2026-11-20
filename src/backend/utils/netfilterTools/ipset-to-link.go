@@ -27,6 +27,7 @@ type IPSetToLink struct {
 	startIdx  uint32
 	ipset     *IPSet
 	srcIPSet  *IPSet
+	localOnly bool
 	nh        *Helper
 	mark      uint32
 	table     int
@@ -119,11 +120,16 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		роутерном трафике приходилось разводить руками (64-док §5).
 		С source-гвардией группы трафик роутера маркируется только когда
 		его адрес в src-наборе (43-док §2.5).
+		localOnly: прыжка нет вовсе - роутер вне группы («вся локалка»
+		контроллера не ловит его пробы; инцидент затора 21.11), флип флага
+		на пересборке группы добавляет/снимает прыжок через disable/enable.
 	*/
 
-	err = ipt.Append("mangle", "OUTPUT", "-j", r.chainName)
-	if err != nil {
-		return fmt.Errorf("failed to append rule to OUTPUT: %w", err)
+	if !r.localOnly {
+		err = ipt.Append("mangle", "OUTPUT", "-j", r.chainName)
+		if err != nil {
+			return fmt.Errorf("failed to append rule to OUTPUT: %w", err)
+		}
 	}
 
 	/*
@@ -580,13 +586,14 @@ func (r *IPSetToLink) AddrChangeHook(event netlink.AddrUpdate) error {
 	return errors.Join(errs...)
 }
 
-func (nh *Helper) IPSetToLink(name string, ifaceName string, ipset *IPSet, srcIPSet *IPSet) *IPSetToLink {
+func (nh *Helper) IPSetToLink(name string, ifaceName string, ipset *IPSet, srcIPSet *IPSet, localOnly bool) *IPSetToLink {
 	return &IPSetToLink{
 		nh:        nh,
 		chainName: nh.ChainPrefix + name,
 		ifaceName: ifaceName,
 		ipset:     ipset,
 		srcIPSet:  srcIPSet,
+		localOnly: localOnly,
 		startIdx:  nh.StartIdx,
 	}
 }

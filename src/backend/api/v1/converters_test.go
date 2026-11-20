@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"magitrickle/api/v1/types"
+	"magitrickle/models"
 	"magitrickle/utils/intID"
 )
 
@@ -53,5 +54,30 @@ func TestGroupFromReqInvalidSource(t *testing.T) {
 		if _, err := GroupFromReq(types.GroupReq{Name: "x", Interface: "nwg0", Sources: []string{src}}, nil); err == nil {
 			t.Fatalf("invalid source %q accepted", src)
 		}
+	}
+}
+
+// localOnly: PUT-семантика - поле заменяется целиком, отсутствие = false
+// (прежнее поведение с OUTPUT-прыжком); эхо в ответе
+func TestGroupLocalOnlyRoundTrip(t *testing.T) {
+	g, err := GroupFromReq(types.GroupReq{Name: "x", Interface: "nwg0", LocalOnly: true}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !g.LocalOnly {
+		t.Fatalf("LocalOnly=true lost in GroupFromReq")
+	}
+	if res := RespFromGroup(g, false); !res.LocalOnly {
+		t.Fatalf("LocalOnly=true lost in RespFromGroup")
+	}
+
+	// отсутствие поля на существующей группе снимает флаг (полная замена)
+	existing := &models.Group{Name: "x", Interface: "nwg0", LocalOnly: true}
+	g2, err := GroupFromReq(types.GroupReq{Name: "x", Interface: "nwg0"}, existing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if g2.LocalOnly {
+		t.Fatalf("LocalOnly not cleared on PUT without the field")
 	}
 }

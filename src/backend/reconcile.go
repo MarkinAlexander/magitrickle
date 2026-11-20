@@ -51,7 +51,7 @@ func (a *App) reconcileOnce() {
 		if !g.Enabled() || !g.ConfiguredEnabled() {
 			continue
 		}
-		if a.groupHooksPresent(g.RuntimeKey()) {
+		if a.groupHooksPresent(g) {
 			continue
 		}
 		log.Warn().
@@ -74,12 +74,15 @@ func (a *App) reconcileOnce() {
 
 // groupHooksPresent проверяет ЖИВОЕ (не модельное) состояние: 4 прыжка
 // -j/-g MT_<id> в builtin-цепочках + существование самой цепочки (тела) в
-// filter/mangle/nat. Ошибка чтения live-правил не наказывает группу
+// filter/mangle/nat. У localOnly-группы OUTPUT-прыжка нет по дизайну -
+// без пропуска точка считалась бы пропажей каждые 30с (вечный
+// disable/enable). Ошибка чтения live-правил не наказывает группу
 // (true), чтобы не пересобирать всё при разовом сбое iptables-save.
-func (a *App) groupHooksPresent(runtimeKey string) bool {
+func (a *App) groupHooksPresent(g *RuleSet) bool {
 	if a.nfHelper == nil || a.nfHelper.IPTables4 == nil {
 		return true
 	}
+	runtimeKey := g.RuntimeKey()
 	chainName := a.nfHelper.ChainPrefix + runtimeKey
 	live, err := a.nfHelper.IPTables4.GetCurrentRules()
 	if err != nil {
@@ -87,6 +90,9 @@ func (a *App) groupHooksPresent(runtimeKey string) bool {
 		return true
 	}
 	for _, hp := range groupHookPoints {
+		if g.localOnly() && hp.table == "mangle" && hp.chain == "OUTPUT" {
+			continue
+		}
 		if !tableHasJump(live[hp.table], hp.chain, chainName) {
 			return false
 		}

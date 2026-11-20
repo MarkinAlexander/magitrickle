@@ -34,7 +34,7 @@ func TestSourceGuardRule(t *testing.T) {
 	src := &IPSet{ipsetName: "mt_0a1b2c3d_src"}
 	nh := &Helper{ChainPrefix: "MT_"}
 
-	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, src)
+	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, src, false)
 
 	fake, ipt := newTestIPTables(iptables.ProtocolIPv4)
 	if err := link.insertIPTablesRules(ipt); err != nil {
@@ -55,7 +55,7 @@ func TestSourceGuardRule(t *testing.T) {
 	}
 
 	// v6: суффикс _6 в имени src-сета
-	link6 := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, src)
+	link6 := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, src, false)
 	fake6, ipt6 := newTestIPTables(iptables.ProtocolIPv6)
 	if err := link6.insertIPTablesRules(ipt6); err != nil {
 		t.Fatalf("insertIPTablesRules v6: %v", err)
@@ -72,7 +72,7 @@ func TestNoSourceGuardWithoutSrcSet(t *testing.T) {
 	dst := &IPSet{ipsetName: "mt_0a1b2c3d"}
 	nh := &Helper{ChainPrefix: "MT_"}
 
-	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil)
+	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil, false)
 	fake, ipt := newTestIPTables(iptables.ProtocolIPv4)
 	if err := link.insertIPTablesRules(ipt); err != nil {
 		t.Fatalf("insertIPTablesRules: %v", err)
@@ -94,7 +94,7 @@ func TestMangleOutputJump(t *testing.T) {
 	dst := &IPSet{ipsetName: "mt_0a1b2c3d"}
 	nh := &Helper{ChainPrefix: "MT_"}
 
-	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil)
+	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil, false)
 	fake, ipt := newTestIPTables(iptables.ProtocolIPv4)
 	if err := link.insertIPTablesRules(ipt); err != nil {
 		t.Fatalf("insertIPTablesRules: %v", err)
@@ -117,5 +117,69 @@ func TestMangleOutputJump(t *testing.T) {
 		if reflect.DeepEqual(r, want) {
 			t.Fatalf("OUTPUT jump survived delete")
 		}
+	}
+}
+
+// localOnly-группа: OUTPUT-прыжка нет вовсе (роутер вне группы, инцидент
+// затора 21.11), остальные точки подключения и тело цепочки - как обычно
+func TestLocalOnlyNoOutputJump(t *testing.T) {
+	dst := &IPSet{ipsetName: "mt_0a1b2c3d"}
+	nh := &Helper{ChainPrefix: "MT_"}
+
+	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil, true)
+	fake, ipt := newTestIPTables(iptables.ProtocolIPv4)
+	if err := link.insertIPTablesRules(ipt); err != nil {
+		t.Fatalf("insertIPTablesRules: %v", err)
+	}
+
+	want := []string{"-j", "MT_0a1b2c3d"}
+	for _, r := range fake.GetRules("mangle", "OUTPUT") {
+		if reflect.DeepEqual(r, want) {
+			t.Fatalf("localOnly group got OUTPUT jump: %v", fake.GetRules("mangle", "OUTPUT"))
+		}
+	}
+	var found bool
+	for _, r := range fake.GetRules("mangle", "PREROUTING") {
+		if reflect.DeepEqual(r, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("PREROUTING jump missing for localOnly group")
+	}
+
+	// снятие группы чисто: несуществующий OUTPUT-джамп не ломает delete
+	if err := link.deleteIPTablesRules(ipt); err != nil {
+		t.Fatalf("deleteIPTablesRules: %v", err)
+	}
+}
+
+// флип флага на пересборке: localOnly=false возвращает OUTPUT-прыжок
+func TestLocalOnlyFlipRestoresOutputJump(t *testing.T) {
+	dst := &IPSet{ipsetName: "mt_0a1b2c3d"}
+	nh := &Helper{ChainPrefix: "MT_"}
+
+	fake, ipt := newTestIPTables(iptables.ProtocolIPv4)
+	link := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil, true)
+	if err := link.insertIPTablesRules(ipt); err != nil {
+		t.Fatalf("insert localOnly: %v", err)
+	}
+	if err := link.deleteIPTablesRules(ipt); err != nil {
+		t.Fatalf("delete localOnly: %v", err)
+	}
+
+	link2 := nh.IPSetToLink("0a1b2c3d", "nwg0", dst, nil, false)
+	if err := link2.insertIPTablesRules(ipt); err != nil {
+		t.Fatalf("insert after flip: %v", err)
+	}
+	want := []string{"-j", "MT_0a1b2c3d"}
+	var found bool
+	for _, r := range fake.GetRules("mangle", "OUTPUT") {
+		if reflect.DeepEqual(r, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("OUTPUT jump missing after flip: %v", fake.GetRules("mangle", "OUTPUT"))
 	}
 }

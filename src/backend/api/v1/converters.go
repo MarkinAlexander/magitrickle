@@ -47,6 +47,9 @@ func GroupFromReq(req types.GroupReq, existing *models.Group) (*models.Group, er
 	if req.Enable != nil {
 		group.Enable = *req.Enable
 	}
+	// локалка-без-роутера подлежит полной замене вместе с группой (семантика
+	// PUT): отсутствие поля = прежнее поведение (OUTPUT-прыжок есть)
+	group.LocalOnly = req.LocalOnly
 	// источники подлежат полной замене вместе с группой (семантика PUT);
 	// отсутствие поля или пустой список = группа без ограничения источников
 	group.Sources = nil
@@ -113,6 +116,7 @@ func RespFromGroup(group *models.Group, withRules bool) types.GroupRes {
 		Interface: group.Interface,
 		Enable:    group.Enable,
 		Sources:   group.Sources,
+		LocalOnly: group.LocalOnly,
 	}
 	if withRules {
 		groupRes.RulesRes = RespFromRules(group.Rules)
