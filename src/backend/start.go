@@ -185,8 +185,13 @@ func (a *App) Start(ctx context.Context) (err error) {
 
 	a.startDNSListeners(newCtx, errChan)
 
+	linkNames, absent := resolveLinks(a.config.Link, linkExists, lanFallbackNames)
+	if len(absent) > 0 {
+		log.Warn().Strs("link", absent).Strs("resolved", linkNames).
+			Msg("link not found in system, taking LAN addresses from fallback interface")
+	}
 	var interfaceAddrs []netlink.Addr
-	for _, linkName := range a.config.Link {
+	for _, linkName := range linkNames {
 		link, err := netlink.LinkByName(linkName)
 		if err != nil {
 			return fmt.Errorf("failed to find link %s: %w", linkName, err)
